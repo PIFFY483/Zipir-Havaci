@@ -1,0 +1,12 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "ingredients": [
+    {
+      "item": "zipirhavaci:blazing_mass"
+    }
+  ],
+  "result": {
+    "item": "minecraft:blaze_rod",
+    "count": 3
+  }
+}

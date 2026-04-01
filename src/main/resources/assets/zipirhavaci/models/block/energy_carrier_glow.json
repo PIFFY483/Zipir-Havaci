@@ -1,0 +1,21 @@
+{
+  "format_version": "1.9.0",
+  "render_type": "minecraft:cutout",
+  "textures": {
+    "1": "zipirhavaci:block/energy_carrier_e"
+  },
+  "elements": [
+    {
+      "from": [5.49, 5.49, 5.49], "to": [10.51, 10.51, 10.51],
+      "rotation": {"angle": 0, "axis": "y", "origin": [8, 8, 8]},
+      "faces": {
+        "north": {"uv": [8, 6, 10.5, 8.5], "texture": "#1", "emissive": true},
+        "east": {"uv": [8, 9, 10.5, 11.5], "texture": "#1", "emissive": true},
+        "south": {"uv": [9.5, 0, 12, 2.5], "texture": "#1", "emissive": true},
+        "west": {"uv": [11, 3, 13.5, 5.5], "texture": "#1", "emissive": true},
+        "up": {"uv": [7.5, 13.5, 5, 11], "texture": "#1", "emissive": true},
+        "down": {"uv": [13.5, 6, 11, 8.5], "texture": "#1", "emissive": true}
+      }
+    }
+  ]
+}

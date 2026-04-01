@@ -1,0 +1,15 @@
+{
+  "structures": [
+    {
+      "structure": "zipirhavaci:silent_life_cell",
+      "weight": 1
+    }
+  ],
+  "placement": {
+    "type": "minecraft:random_spread",
+    "spacing": 66,
+    "separation": 20,
+    "salt": 161803398,
+    "spread_type": "linear"
+  }
+}

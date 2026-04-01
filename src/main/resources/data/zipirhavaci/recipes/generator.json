@@ -1,0 +1,21 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "RFR",
+    "SCS",
+    "GWB"
+  ],
+  "key": {
+    "R": { "item": "minecraft:redstone_block" },
+    "F": { "item": "minecraft:fire_charge" },
+    "S": { "item": "minecraft:netherite_scrap" },
+    "C": { "item": "minecraft:heart_of_the_sea" },
+    "G": { "item": "minecraft:gunpowder" },
+    "W": { "item": "minecraft:water_bucket" },
+    "B": { "item": "zipirhavaci:blaze_core" }
+  },
+  "result": {
+    "item": "zipirhavaci:generator",
+    "count": 1
+  }
+}

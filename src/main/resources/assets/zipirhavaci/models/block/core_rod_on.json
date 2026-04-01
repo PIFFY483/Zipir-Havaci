@@ -1,0 +1,8 @@
+{
+  "parent": "minecraft:block/cube_all",
+  "textures": {
+    "all": "zipirhavaci:block/core_rod",
+    "emissive": "zipirhavaci:block/core_rod_e"
+  },
+  "render_type": "minecraft:cutout"
+}

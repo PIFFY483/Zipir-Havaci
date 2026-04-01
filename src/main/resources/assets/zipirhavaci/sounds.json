@@ -1,0 +1,30 @@
+{
+  "cooldown_clank": {
+    "category": "player",
+    "subtitle": "subtitles.zipirhavaci.cooldown",
+    "sounds": [
+      "zipirhavaci:cooldown_sound"
+    ]
+  },
+  "aviator_idle": {
+    "category": "player",
+    "subtitle": "subtitles.zipirhavaci.idle",
+    "sounds": [
+      "zipirhavaci:aviator_passive"
+    ]
+  },
+  "aviator_deploy": {
+    "category": "player",
+    "subtitle": "subtitles.zipirhavaci.deploy",
+    "sounds": [
+      "zipirhavaci:deploy"
+    ]
+  },
+  "bond_ready": {
+    "category": "player",
+    "subtitle": "subtitles.zipirhavaci.bond_ready",
+    "sounds": [
+      "zipirhavaci:bond_ready"
+    ]
+  }
+}

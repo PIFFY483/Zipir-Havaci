@@ -1,0 +1,39 @@
+modLoader="javafml"
+loaderVersion="[47,)" # Forge 47 (1.20.1) ve üzeri için
+license="MIT"
+issueTrackerURL="https://github.com/seninadin/zipirhavaci/issues"
+
+[[mods]]
+modId="zipirhavaci"
+version="1.0.0"
+displayName="Zipir Havaci"
+updateJSONURL="https://example.com/update.json"
+displayURL="https://example.com"
+logoFile="zipirhavaci.png" # Eğer resources içine bir logo atarsan buraya ismini yazarsın
+credits="Miahfa ve ekibi"
+authors="Usta Mühendis"
+description='''
+Paslı yaylar, gıcırdayan dişliler ve bolca su buharı!
+Zıpır Havacı ile karakterini yassılaştır, momentumu topla ve kendini göklere fırlat.
+Unutma: Kalkanını fırlatırsan peşinden koşman gerekir, Kratos değilsin!
+'''
+
+[[dependencies.zipirhavaci]]
+modId="forge"
+mandatory=true
+versionRange="[47.2.12,)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.zipirhavaci]]
+modId="minecraft"
+mandatory=true
+versionRange="[1.20.1,1.21)"
+ordering="NONE"
+side="BOTH"
+[[dependencies.zipirhavaci]]
+modId="geckolib"
+mandatory=true
+versionRange="[4,)"
+ordering="NONE"
+side="BOTH"

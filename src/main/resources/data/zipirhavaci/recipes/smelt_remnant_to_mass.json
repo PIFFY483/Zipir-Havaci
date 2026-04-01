@@ -1,0 +1,9 @@
+{
+  "type": "minecraft:smelting",
+  "ingredient": {
+    "item": "zipirhavaci:scorched_remnant"
+  },
+  "result": "zipirhavaci:blazing_mass",
+  "experience": 0.7,
+  "cookingtime": 200
+}

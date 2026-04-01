@@ -1,0 +1,34 @@
+{
+	"format_version": "1.8.0",
+	"animations": {
+		"animation.heavy_piston.piston_extend": {
+			"animation_length": 0.3,
+			"override_previous_animation": true,
+			"bones": {
+				"arm_group": {
+					"position": {
+						"0.0":    {"vector": [0, 0, 0]},
+						"0.1333": {"vector": [0, 0, -8.5]},
+						"0.2":    {"vector": [0, 0, -7.5]},
+						"0.3":    {"vector": [0, 0, -9]}
+					}
+				}
+			}
+		},
+		"animation.heavy_piston.piston_retract": {
+			"animation_length": 0.3,
+			"override_previous_animation": true,
+			"bones": {
+				"arm_group": {
+					"position": {
+						"0.0":    {"vector": [0, 0, -9]},
+						"0.1333": {"vector": [0, 0, 0]},
+						"0.2":    {"vector": [0, 0, -1.6]},
+						"0.3":    {"vector": [0, 0, 0]}
+					}
+				}
+			}
+		}
+	},
+	"geckolib_format_version": 2
+}

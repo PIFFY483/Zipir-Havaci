@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "IIP",
+    "RSR",
+    "IIP"
+  ],
+  "key": {
+    "I": { "item": "minecraft:iron_ingot" },
+    "P": { "item": "minecraft:piston" },
+    "R": { "item": "minecraft:repeater" },
+    "S": { "item": "minecraft:redstone" }
+  },
+  "result": {
+    "item": "zipirhavaci:heavy_piston",
+    "count": 1
+  }
+}

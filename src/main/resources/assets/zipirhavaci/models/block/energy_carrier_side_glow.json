@@ -1,0 +1,33 @@
+{
+  "format_version": "1.9.0",
+  "render_type": "minecraft:cutout",
+  "textures": {
+    "1": "zipirhavaci:block/energy_carrier_side_e"
+  },
+  "elements": [
+    {
+      "from": [5.99, 5.99, 1.99], "to": [10.01, 10.01, 6.01],
+      "rotation": {"angle": 0, "axis": "y", "origin": [8, 8, 8]},
+      "faces": {
+        "north": {"uv": [3, 0, 5, 2], "texture": "#1", "emissive": true},
+        "east": {"uv": [3, 2.5, 5, 4.5], "texture": "#1", "emissive": true},
+        "south": {"uv": [3, 5, 5, 7], "texture": "#1", "emissive": true},
+        "west": {"uv": [5.5, 0, 7.5, 2], "texture": "#1", "emissive": true},
+        "up": {"uv": [7.5, 4.5, 5.5, 2.5], "texture": "#1", "emissive": true},
+        "down": {"uv": [7.5, 5, 5.5, 7], "texture": "#1", "emissive": true}
+      }
+    },
+    {
+      "from": [5.49, 5.49, -0.01], "to": [10.51, 10.51, 2.01],
+      "rotation": {"angle": 0, "axis": "y", "origin": [8, 8, 8]},
+      "faces": {
+        "north": {"uv": [0, 0, 2.5, 2.5], "texture": "#1", "emissive": true},
+        "east": {"uv": [0, 6, 1, 8.5], "texture": "#1", "emissive": true},
+        "south": {"uv": [0, 3, 2.5, 5.5], "texture": "#1", "emissive": true},
+        "west": {"uv": [1.5, 6, 2.5, 8.5], "texture": "#1", "emissive": true},
+        "up": {"uv": [5.5, 8.5, 3, 7.5], "texture": "#1", "emissive": true},
+        "down": {"uv": [8.5, 7.5, 6, 8.5], "texture": "#1", "emissive": true}
+      }
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "display": {
+    "icon": {
+      "item": "zipirhavaci:meteor_impact_scroll"
+    },
+    "title": {
+      "text": "From the Heaven"
+    },
+    "description": {
+      "text": "Göklerden gelen bir karar vardır! Meteor tekniğini öğrendin."
+    },
+    "frame": "challenge",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "criteria": {
+    "manual_trigger": {
+      "trigger": "minecraft:impossible"
+    }
+  }
+}

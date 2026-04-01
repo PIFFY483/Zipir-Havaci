@@ -1,0 +1,23 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    " C ",
+    "RBR",
+    " C "
+  ],
+  "key": {
+    "R": {
+      "item": "minecraft:redstone"
+    },
+    "C": {
+      "item": "minecraft:copper_ingot"
+    },
+    "B": {
+      "item": "minecraft:coal"
+    }
+  },
+  "result": {
+    "item": "zipirhavaci:energy_carrier",
+    "count": 4
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "IBF",
+    "LGE",
+    "IHP"
+  ],
+  "key": {
+    "I": { "item": "minecraft:iron_block" },
+    "B": { "item": "zipirhavaci:heavy_metal" },
+    "F": { "item": "minecraft:blast_furnace" },
+    "L": { "item": "minecraft:lightning_rod" },
+    "G": { "item": "zipirhavaci:generator" },
+    "E": { "item": "zipirhavaci:heavy_piston" },
+    "H": { "item": "zipirhavaci:heavy_metal" },
+    "P": { "item": "minecraft:heavy_weighted_pressure_plate" }
+  },
+  "result": { "item": "zipirhavaci:zipir_aviator", "count": 1
+  }
+}

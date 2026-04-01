@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "BAB",
+    "ARA",
+    "BAB"
+  ],
+  "key": {
+    "R": { "item": "zipirhavaci:scorched_remnant" },
+    "A": { "item": "minecraft:arrow" },
+    "B": { "item": "minecraft:blaze_powder" }
+  },
+  "result": {
+    "item": "zipirhavaci:scorched_impeller_arrow",
+    "count": 4
+  }
+}

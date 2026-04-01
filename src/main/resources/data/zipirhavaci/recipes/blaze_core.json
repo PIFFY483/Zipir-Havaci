@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "BEB",
+    "ERE",
+    "BEB"
+  ],
+  "key": {
+    "B": { "item": "minecraft:blaze_rod" },
+    "E": { "item": "minecraft:end_crystal" },
+    "R": { "item": "minecraft:redstone" }
+  },
+  "result": {
+    "item": "zipirhavaci:blaze_core",
+    "count": 1
+  }
+}

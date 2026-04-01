@@ -1,0 +1,14 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "H H",
+    "H H"
+  ],
+  "key": {
+    "H": { "item": "zipirhavaci:heavy_metal" }
+  },
+  "result": {
+    "item": "zipirhavaci:strained_grief_boots",
+    "count": 1
+  }
+}

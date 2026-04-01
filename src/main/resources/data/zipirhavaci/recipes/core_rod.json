@@ -1,0 +1,23 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    " R ",
+    " C ",
+    " B "
+  ],
+  "key": {
+    "R": {
+      "item": "minecraft:repeater"
+    },
+    "C": {
+      "item": "minecraft:copper_block"
+    },
+    "B": {
+      "item": "minecraft:blackstone"
+    }
+  },
+  "result": {
+    "item": "zipirhavaci:core_rod",
+    "count": 1
+  }
+}

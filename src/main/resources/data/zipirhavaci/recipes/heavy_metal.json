@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "INI",
+    "ONO",
+    "ICI"
+  ],
+  "key": {
+    "I": { "item": "minecraft:iron_ingot" },
+    "N": { "item": "minecraft:netherite_ingot" },
+    "O": { "item": "minecraft:obsidian" },
+    "C": { "item": "minecraft:copper_block" }
+  },
+  "result": {
+    "item": "zipirhavaci:heavy_metal",
+    "count": 1
+  }
+}

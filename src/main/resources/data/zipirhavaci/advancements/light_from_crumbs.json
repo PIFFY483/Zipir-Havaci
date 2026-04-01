@@ -1,0 +1,22 @@
+{
+  "display": {
+    "icon": {
+      "item": "zipirhavaci:anima"
+    },
+    "title": {
+      "text": "Light From Crumbs"
+    },
+    "description": {
+      "text": "Thy essence is now the anchor of the Aether!"
+    },
+    "frame": "challenge",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "criteria": {
+    "main_criterion": {
+      "trigger": "minecraft:impossible"
+    }
+  }
+}

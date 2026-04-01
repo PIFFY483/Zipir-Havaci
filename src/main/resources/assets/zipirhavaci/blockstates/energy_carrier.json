@@ -1,0 +1,26 @@
+{
+  "multipart": [
+
+    { "apply": { "model": "zipirhavaci:block/energy_carrier" }},
+    { "when": { "powered": "true" }, "apply": { "model": "zipirhavaci:block/energy_carrier_glow" }},
+
+
+    { "when": { "north": "true" }, "apply": { "model": "zipirhavaci:block/energy_carrier_side" }},
+    { "when": { "north": "true", "powered": "true" }, "apply": { "model": "zipirhavaci:block/energy_carrier_side_glow" }},
+
+    { "when": { "south": "true" }, "apply": { "model": "zipirhavaci:block/energy_carrier_side", "y": 180 }},
+    { "when": { "south": "true", "powered": "true" }, "apply": { "model": "zipirhavaci:block/energy_carrier_side_glow", "y": 180 }},
+
+    { "when": { "east": "true" }, "apply": { "model": "zipirhavaci:block/energy_carrier_side", "y": 90 }},
+    { "when": { "east": "true", "powered": "true" }, "apply": { "model": "zipirhavaci:block/energy_carrier_side_glow", "y": 90 }},
+
+    { "when": { "west": "true" }, "apply": { "model": "zipirhavaci:block/energy_carrier_side", "y": 270 }},
+    { "when": { "west": "true", "powered": "true" }, "apply": { "model": "zipirhavaci:block/energy_carrier_side_glow", "y": 270 }},
+
+    { "when": { "up": "true" }, "apply": { "model": "zipirhavaci:block/energy_carrier_side", "x": 270 }},
+    { "when": { "up": "true", "powered": "true" }, "apply": { "model": "zipirhavaci:block/energy_carrier_side_glow", "x": 270 }},
+
+    { "when": { "down": "true" }, "apply": { "model": "zipirhavaci:block/energy_carrier_side", "x": 90 }},
+    { "when": { "down": "true", "powered": "true" }, "apply": { "model": "zipirhavaci:block/energy_carrier_side_glow", "x": 90 }}
+  ]
+}

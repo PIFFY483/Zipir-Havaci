@@ -1,0 +1,24 @@
+{
+  "display": {
+    "icon": {
+      "item": "minecraft:enchanted_book"
+    },
+    "title": {
+      "text": "Soul Bound",
+      "color": "dark_purple"
+    },
+    "description": {
+      "text": "Ruh Bağı tekniğini öğrendin. Artık fırlatılan kalkana ruhsal bağ kurabilirsin."
+    },
+    "frame": "challenge",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false,
+    "background": "minecraft:textures/block/soul_sand.png"
+  },
+  "criteria": {
+    "manual_trigger": {
+      "trigger": "minecraft:impossible"
+    }
+  }
+}
