@@ -8,6 +8,7 @@ import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.player.AdvancementEvent;
+import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
@@ -63,4 +64,19 @@ public class LightFromCrumbsHandler {
             }
         }
     }
+
+    @SubscribeEvent
+    public static void onPlayerRespawn(PlayerEvent.PlayerRespawnEvent event) {
+        if (event.getEntity() instanceof ServerPlayer player) {
+            if (player.getTags().contains(ANIMA_TAG)) {
+                AttributeInstance maxHealth = player.getAttribute(Attributes.MAX_HEALTH);
+                if (maxHealth != null && maxHealth.getModifier(ANIMA_HP_BONUS_ID) == null) {
+                    maxHealth.addPermanentModifier(new AttributeModifier(
+                            ANIMA_HP_BONUS_ID, "Anima Light Bonus", 8.0, AttributeModifier.Operation.ADDITION));
+                    player.setHealth(player.getHealth() + 8.0f);
+                }
+            }
+        }
+    }
+
 }
