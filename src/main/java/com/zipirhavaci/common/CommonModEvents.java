@@ -219,53 +219,77 @@ public class CommonModEvents {
 
         oldPlayer.reviveCaps();
 
+        // ─── ANIMA TAG  ───
         if (oldPlayer.getTags().contains("has_anima_light")) {
             newPlayer.addTag("has_anima_light");
         }
 
         oldPlayer.getCapability(StaticProgressionProvider.STATIC_PROGRESSION).ifPresent(oldData -> {
             newPlayer.getCapability(StaticProgressionProvider.STATIC_PROGRESSION).ifPresent(newData -> {
-                // Her durumda kopyalananlar
+                // 1. HER DURUMDA KOPYALANANLAR
                 newData.setAuraLevel(oldData.getAuraLevel());
                 newData.setLightningResist(oldData.getLightningResist());
                 newData.setLastRodPos(oldData.getLastRodPos());
                 newData.setTrainingStartTime(oldData.getTrainingStartTime());
-
-                // ─── LANET HER ZAMAN KORUNUR ──────────────────────────────
                 newData.setCursed(oldData.isCursed());
                 newData.setLastDeathDenyTime(oldData.getLastDeathDenyTime());
                 newData.setDarkAuraLevel(oldData.getDarkAuraLevel());
-                // Karanlık aura ölümde kapanır ama seviye korunur
-                newData.setDarkAuraActive(false);
-                newData.setDarkAuraTicksLeft(0);
                 newData.setLastDarkAuraUseTime(oldData.getLastDarkAuraUseTime());
-                // ──────────────────────────────────────────────────────────
+
+                // YENİ/KRİTİK: Ritüel ilerlemesi ve duman görünürlüğü (Her iki durumda da korunmalı)
+                newData.setSmokeVisible(oldData.isSmokeVisible());
+                newData.setRitualStep(oldData.getRitualStep());
 
                 if (event.isWasDeath()) {
+                    // 2. SADECE ÖLÜM DURUMUNDA SIFIRLANANLAR
                     newData.setStrikeCount(0);
                     newData.setAuraActive(false);
                     newData.setAuraTicksLeft(0);
+                    newData.setDarkAuraActive(false);
+                    newData.setDarkAuraTicksLeft(0);
 
                     if (oldPlayer instanceof ServerPlayer sOld && newPlayer instanceof ServerPlayer sNew) {
                         grantAdvancementIfHad(sOld, sNew, new ResourceLocation(ZipirHavaci.MOD_ID, "soul_bound"));
                         grantAdvancementIfHad(sOld, sNew, new ResourceLocation(ZipirHavaci.MOD_ID, "from_the_heaven"));
                         grantAdvancementIfHad(sOld, sNew, new ResourceLocation(ZipirHavaci.MOD_ID, "light_from_crumbs"));
 
-                        var maxHealth = sNew.getAttribute(net.minecraft.world.entity.ai.attributes.Attributes.MAX_HEALTH);
-                        UUID bonusId = UUID.fromString("f470298a-211c-4f71-a9f8-4f243e887f86");
-                        if (maxHealth != null && maxHealth.getModifier(bonusId) == null) {
-                            maxHealth.addPermanentModifier(new net.minecraft.world.entity.ai.attributes.AttributeModifier(
-                                    bonusId, "Anima Light Bonus", 8.0,
-                                    net.minecraft.world.entity.ai.attributes.AttributeModifier.Operation.ADDITION));
-                            sNew.heal(8.0f);
+                        // ─── ANIMA (CRUMBS) PASİFİ (+4 KALP) ───
+                        if (sNew.getTags().contains("has_anima_light")) {
+                            var maxHealth = sNew.getAttribute(net.minecraft.world.entity.ai.attributes.Attributes.MAX_HEALTH);
+                            UUID animaBonusId = UUID.fromString("f470298a-211c-4f71-a9f8-4f243e887f86");
+                            if (maxHealth != null && maxHealth.getModifier(animaBonusId) == null) {
+                                maxHealth.addPermanentModifier(new net.minecraft.world.entity.ai.attributes.AttributeModifier(
+                                        animaBonusId, "Anima Light Bonus", 8.0,
+                                        net.minecraft.world.entity.ai.attributes.AttributeModifier.Operation.ADDITION));
+                            }
                         }
+
+                        // ─── DARK AURA RİTÜEL PASİFİ (+1 KALP) ───
+                        if (!newData.isSmokeVisible()) {
+                            var maxHealth = sNew.getAttribute(net.minecraft.world.entity.ai.attributes.Attributes.MAX_HEALTH);
+                            UUID ritualBonusId = UUID.fromString("a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+                            if (maxHealth != null && maxHealth.getModifier(ritualBonusId) == null) {
+                                maxHealth.addPermanentModifier(new net.minecraft.world.entity.ai.attributes.AttributeModifier(
+                                        ritualBonusId, "Dark Aura Ritual HP", 2.0,
+                                        net.minecraft.world.entity.ai.attributes.AttributeModifier.Operation.ADDITION));
+                            }
+                        }
+
+                        // Canı tazele
+                        sNew.setHealth(sNew.getMaxHealth());
                     }
                 } else {
-                    // Dimension geçişi: her şey korunur
+                    // 3. BOYUT GEÇİŞİ (NETHER/END): Her şey olduğu gibi korunur
                     newData.setStrikeCount(oldData.getStrikeCount());
                     newData.setAuraActive(oldData.isAuraActive());
                     newData.setAuraTicksLeft(oldData.getAuraTicksLeft());
                     newData.setLastAuraUseTime(oldData.getLastAuraUseTime());
+                    newData.setDarkAuraActive(oldData.isDarkAuraActive());
+                    newData.setDarkAuraTicksLeft(oldData.getDarkAuraTicksLeft());
+                }
+
+                if (newPlayer instanceof ServerPlayer sp) {
+                    PacketHandler.sendToPlayer(sp, new SyncStaticProgressionPacket(newData, sp.getId()));
                 }
             });
         });
