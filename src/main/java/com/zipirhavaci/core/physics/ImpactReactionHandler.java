@@ -60,8 +60,6 @@ import static com.zipirhavaci.physics.MovementHandler.triggerDoorShake;
 @Mod.EventBusSubscriber(modid = "zipirhavaci", bus = Mod.EventBusSubscriber.Bus.FORGE)
 public class ImpactReactionHandler {
 
-    private static final Map<UUID, List<net.minecraft.world.entity.Entity>> PLAYER_CRATERS = new ConcurrentHashMap<>();
-
     private static final Map<UUID, Integer> CHARGE = new ConcurrentHashMap<>();
     private static final Map<UUID, Long> COOLDOWN = new ConcurrentHashMap<>();
     private static final Map<UUID, Boolean> SONIC_PLAYED = new ConcurrentHashMap<>();
@@ -73,12 +71,25 @@ public class ImpactReactionHandler {
     private static final Map<UUID, Integer> FALL_TICKS = new ConcurrentHashMap<>();
     private static final Map<UUID, Double> MAX_FALL_SPEED = new ConcurrentHashMap<>();
     private static int activeCraterCount = 0;
-    private static final CompoundTag REUSABLE_BRIGHTNESS = new CompoundTag();
     private static final List<Display.BlockDisplay> SPAWN_BATCH = new java.util.ArrayList<>();
-    private static final java.util.Map<Integer, com.mojang.math.Transformation> TRANSFORMATION_CACHE = new java.util.HashMap<>();
-    private static final CompoundTag REUSABLE_NBT = new CompoundTag();
-    private static final CompoundTag REUSABLE_TRANS_TAG = new CompoundTag();
+    private static final Map<UUID, List<Integer>> PLAYER_CRATERS_IDS = new ConcurrentHashMap<>();
+    private static final Map<Long, CraterBlockData> ACTIVE_CRATERS_MAP = new ConcurrentHashMap<>();
+    private static final List<ImpactDamageZone> ACTIVE_DAMAGE_ZONES = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private record ImpactDamageZone(Vec3 center, double radius, UUID owner, long expireTime) {}
+    private static final java.util.concurrent.ConcurrentHashMap<Long, java.util.concurrent.atomic.AtomicInteger> CHUNK_CRATER_COUNT =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final int MAX_CRATERS_PER_CHUNK = 150;
+    private static final java.util.Random NOISE_RANDOM = new java.util.Random();
 
+    private static final java.util.concurrent.ExecutorService CRATER_EXECUTOR =
+            java.util.concurrent.Executors.newFixedThreadPool(
+                    Math.max(2, Runtime.getRuntime().availableProcessors() / 2),
+                    r -> {
+                        Thread t = new Thread(r, "ZipirKrater-Worker");
+                        t.setDaemon(true);
+                        return t;
+                    }
+            );
 
 
     // OPTİMİZASYON: Aktif krater blokları (Thread-safe)
@@ -199,7 +210,7 @@ public class ImpactReactionHandler {
     }
 
     private static void tick(Player player) {
-        // OPTİMİZASYON: Server da krater bloklarını güncelle
+        // OPTİMİZASYON
 
         if (!knowsMeteorSkill(player)) {
             CHARGE.put(player.getUUID(), 0);
@@ -277,54 +288,44 @@ public class ImpactReactionHandler {
         if (!player.level().isClientSide && charge >= 35 && !IMPACT_LOCK.getOrDefault(id, false)) {
             if (vel.lengthSqr() > 0.01) {
                 Vec3 direction = vel.normalize();
-                double raycastDistance = Math.min(3.4, 1.0 + (currentSpeed * 0.8));
+                double raycastDistance = Math.max(3.4, currentSpeed + player.getBbWidth());
 
-                Vec3[] checkPoints = {
-                        player.position(),
-                        player.position().add(0.3, 0, 0),
-                        player.position().add(-0.3, 0, 0),
-                        player.position().add(0, player.getBbHeight() * 0.5, 0),
-                        player.position().add(0, player.getBbHeight() * 0.9, 0)
+                Vec3[] offsets = new Vec3[]{
+                        new Vec3(0, player.getBbHeight() * 0.5, 0),       // Merkez (Gövde)
+                        new Vec3(0, 0.1, 0),                              // Ayaklar (Yere teğet geçişleri yakalar)
+                        new Vec3(0, player.getBbHeight() * 0.9, 0),       // Baş hizası (Tavana/üst bloğa çarpmalar)
+                        new Vec3(player.getBbWidth() * 0.4, player.getBbHeight() * 0.5, 0),  // Sağ tolerans
+                        new Vec3(-player.getBbWidth() * 0.4, player.getBbHeight() * 0.5, 0)  // Sol tolerans
                 };
 
-                HitResult closestHit = null;
-                double closestDistance = Double.MAX_VALUE;
+                BlockHitResult validHit = null;
 
-                for (Vec3 checkPoint : checkPoints) {
-                    Vec3 end = checkPoint.add(direction.scale(raycastDistance));
-                    HitResult hit = player.level().clip(new ClipContext(checkPoint, end, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, player));
+                for (Vec3 offset : offsets) {
+                    Vec3 start = player.position().add(offset);
+                    Vec3 end = start.add(direction.scale(raycastDistance));
+
+                    HitResult hit = player.level().clip(new ClipContext(start, end, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, player));
 
                     if (hit.getType() == HitResult.Type.BLOCK) {
-                        BlockPos pos = ((BlockHitResult)hit).getBlockPos();
+                        BlockPos pos = ((BlockHitResult) hit).getBlockPos();
                         BlockState state = player.level().getBlockState(pos);
 
-                        //filtre
-                        if (state.getCollisionShape(player.level(), pos).isEmpty() ||
-                                state.is(net.minecraft.tags.BlockTags.REPLACEABLE_BY_TREES)) {
-                            continue; // Bu bir bitki, taramaya devam et (meteoru durdurma)
-                        }
-                    }
+                        // Filtre
+                        if (!state.getCollisionShape(player.level(), pos).isEmpty() &&
+                                !state.is(net.minecraft.tags.BlockTags.REPLACEABLE_BY_TREES)) {
 
-                    if (hit.getType() != HitResult.Type.MISS) {
-                        double d = checkPoint.distanceTo(hit.getLocation());
-                        if (d < closestDistance) {
-                            closestDistance = d;
-                            closestHit = hit;
+                            validHit = (BlockHitResult) hit;
+                            break;
                         }
                     }
                 }
 
-                if (closestHit != null) {
+                if (validHit != null) {
                     IMPACT_LOCK.put(id, true);
                     double impactSpeed = Math.max(currentSpeed, MAX_FALL_SPEED.getOrDefault(id, 0.0));
-                    Vec3 exactHitPos = closestHit.getLocation();
 
-                    Vec3 surfaceNormal = new Vec3(0, 1, 0);
-                    if (closestHit instanceof net.minecraft.world.phys.BlockHitResult blockHit) {
-                        surfaceNormal = Vec3.atLowerCornerOf(blockHit.getDirection().getNormal());
-                    }
-
-                    triggerImpact(player, impactSpeed, surfaceNormal, exactHitPos);
+                    Vec3 surfaceNormal = Vec3.atLowerCornerOf(validHit.getDirection().getNormal());
+                    triggerImpact(player, impactSpeed, surfaceNormal, validHit.getLocation());
 
                     CHARGE.put(id, 0);
                     MAX_FALL_SPEED.remove(id);
@@ -337,22 +338,25 @@ public class ImpactReactionHandler {
     }
 
     public static void triggerImpact(Player player, double speed, Vec3 normal, Vec3 exactHitPos) {
+        if (!(player.level() instanceof ServerLevel serverLevel)) return;
 
-
-
+        // TEMEL HESAPLAMALAR VE GÖRSEL HAZIRLIK
         MeteorVisualEffects.ImpactTemplate impact = MeteorVisualEffects.calculateImpact(speed, normal);
         player.fallDistance = 0;
 
+        // Ses efektleri
         player.level().playSound(null, exactHitPos.x, exactHitPos.y, exactHitPos.z,
                 net.minecraft.sounds.SoundEvents.ANVIL_LAND, net.minecraft.sounds.SoundSource.PLAYERS, 0.8f, 1.4f);
         player.level().playSound(null, exactHitPos.x, exactHitPos.y, exactHitPos.z,
                 net.minecraft.sounds.SoundEvents.SHIELD_BLOCK, net.minecraft.sounds.SoundSource.PLAYERS, 1.0f, 0.6f);
 
+        // KALKAN VE ZIRH HASAR HESAPLAMALARI
         ItemStack shield = player.getUseItem();
         if (shield.getItem() instanceof ShieldItem) {
             int damageAmount = Math.max(15, (int)(shield.getMaxDamage() * 0.10));
             shield.hurtAndBreak(damageAmount, player, (p) -> p.broadcastBreakEvent(player.getUsedItemHand()));
         }
+
         double rawDamage = (speed * 4.5) * 0.90;
         float totalToughness = 0;
         for (ItemStack armor : player.getArmorSlots()) {
@@ -363,6 +367,7 @@ public class ImpactReactionHandler {
         double weightPenalty = totalToughness * 0.15;
         float totalRaw = (float)(rawDamage + weightPenalty);
 
+        // Büyü indirimleri
         int ff = 0, bp = 0, pr = 0, fr = 0;
         for (ItemStack armor : player.getArmorSlots()) {
             if (!armor.isEmpty()) {
@@ -376,14 +381,14 @@ public class ImpactReactionHandler {
         float reduction = (ff/16f)*0.30f + (bp/16f)*0.44f + (pr/16f)*0.18f + (fr/16f)*0.30f;
         if (player.hasEffect(net.minecraft.world.effect.MobEffects.FIRE_RESISTANCE)) reduction += 0.06f;
 
+        // CAN KORUMA VE SELF-DAMAGE UYGULAMASI
         float calculatedDamage = totalRaw * (1.0f - Math.min(0.85f, reduction));
         float finalSelfDamage = Math.min(16.0f, calculatedDamage);
         float currentHealth = player.getHealth();
 
         if (currentHealth > 10.0f) {
             if (finalSelfDamage >= (currentHealth - 4.0f)) finalSelfDamage = currentHealth - 4.0f;
-        }
-        else if (currentHealth > 5.0f) {
+        } else if (currentHealth > 5.0f) {
             if (finalSelfDamage >= (currentHealth - 2.0f)) finalSelfDamage = currentHealth - 2.0f;
         }
 
@@ -391,85 +396,83 @@ public class ImpactReactionHandler {
             player.hurt(player.damageSources().flyIntoWall(), finalSelfDamage);
         }
 
+        // DURUM EFEKTLERİ VE PATLAMA GÖRSELİ
         player.level().explode(null, player.getX(), player.getY(), player.getZ(), 0.0F, false, net.minecraft.world.level.Level.ExplosionInteraction.NONE);
-
         player.addEffect(new MobEffectInstance(MobEffects.WEAKNESS, 80, 3, false, false));
         player.addEffect(new MobEffectInstance(MobEffects.MOVEMENT_SLOWDOWN, 35, 5));
         player.addEffect(new MobEffectInstance(MobEffects.CONFUSION, 30, 4));
         player.setXRot(player.getXRot() + 4.0F);
 
+        //  ALT SİSTEM TETİKLEMELERİ (Hasar, Araçlar, Bloklar)
         applyMeteorDamage(player, speed, impact.radius(), impact.power());
         applyVehicleImpact(player, exactHitPos, speed);
         applyShieldImpact(player, exactHitPos, speed);
+
+        // Blok görüntüleri
         spawnDynamicCracks(player, impact.radius(), normal, exactHitPos);
 
         if (player instanceof ServerPlayer sp) {
             MeteorVisualEffects.sendImpact(sp, impact.radius(), normal);
         }
 
+        // FİZİK VE BOUNCE YÖNETİMİ
         player.setPos(player.getX(), player.getY() + 0.08, player.getZ());
-
         final Vec3 impactVelocity = player.getDeltaMovement();
         double dot = impactVelocity.dot(normal);
         Vec3 bounce = impactVelocity.subtract(normal.scale(2.0 * dot)).scale(0.65);
-
         double finalY = (normal.y > 0.5) ? Math.max(0.55, bounce.y) : bounce.y;
         player.setDeltaMovement(bounce.x, finalY, bounce.z);
         player.hurtMarked = true;
 
-        // YENİ HALİ (Thread-Safe)
+        // Motion Packet Sync
         if (player instanceof ServerPlayer sp) {
             sp.connection.send(new net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket(player));
-
             com.zipirhavaci.core.ZipirHavaci.SCHEDULER.schedule(() -> {
-                // Scheduler'dan Ana Sunucu Thread
                 sp.getServer().execute(() -> {
-                    if (!sp.isRemoved()) { // Oyuncu hala oyunda mı?
+                    if (!sp.isRemoved()) {
                         sp.connection.send(new net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket(player));
                     }
                 });
             }, 50, java.util.concurrent.TimeUnit.MILLISECONDS);
         }
 
-        if (player.level() instanceof net.minecraft.server.level.ServerLevel serverLevel) {
-            // Çarpışma merkezini ve mesafeleri belirle
-            net.minecraft.core.BlockPos impactCenter = new net.minecraft.core.BlockPos(
-                    (int)Math.floor(exactHitPos.x), (int)Math.floor(exactHitPos.y), (int)Math.floor(exactHitPos.z));
+        // KAPI VE ÇEVRE ETKİLEŞİMİ
+        net.minecraft.core.BlockPos impactCenter = new net.minecraft.core.BlockPos(
+                (int)Math.floor(exactHitPos.x), (int)Math.floor(exactHitPos.y), (int)Math.floor(exactHitPos.z));
 
-            double breakRadiusSq = 9.0;    // 3.0 blok (3*3)
-            double shakeRadiusSq = 225.0;  // 15.0 blok (15*15)
+        double breakRadiusSq = 9.0;    // 3.0 blok
+        double shakeRadiusSq = 225.0;  // 15.0 blok
+        int scanR = 15;
 
-            int scanR = 15;
-            net.minecraft.core.BlockPos.betweenClosedStream(
-                    impactCenter.offset(-scanR, -3, -scanR),
-                    impactCenter.offset(scanR, 3, scanR)
-            ).forEach(pos -> {
-                net.minecraft.world.level.block.state.BlockState state = serverLevel.getBlockState(pos);
-
-                if (com.zipirhavaci.physics.DoorBlastHandler.isDoor(state)) {
-                    if (state.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.DOUBLE_BLOCK_HALF) &&
-                            state.getValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.DOUBLE_BLOCK_HALF) != net.minecraft.world.level.block.state.properties.DoubleBlockHalf.LOWER) {
-                        return;
-                    }
-
-                    double distSq = pos.distSqr(impactCenter);
-                    boolean isIron = com.zipirhavaci.physics.DoorBlastHandler.isIronLikeDoor(state);
-
-
-                    // 1. Durum: Çok yakın (3 blok altı) VE Demir değilse -> PARÇALA
-                    if (distSq <= breakRadiusSq && !isIron) {
-                        com.zipirhavaci.physics.DoorBlastHandler.blastFromImpact(serverLevel, player, impactVelocity, speed);
-                    }
-                    // 2. Durum: (3-15 blok arası mesafe) VEYA (Çok yakın ama Demir kapı ise) -> SALLA
-                    else if (distSq <= shakeRadiusSq) {
-                        net.minecraft.world.level.block.state.BlockState topState = serverLevel.getBlockState(pos.above());
-                        // MovementHandler içindeki metodu çağırıyoruz
-                        triggerDoorShake(serverLevel, pos, state, topState, isIron);
-                    }
+        net.minecraft.core.BlockPos.betweenClosedStream(
+                impactCenter.offset(-scanR, -3, -scanR),
+                impactCenter.offset(scanR, 3, scanR)
+        ).forEach(pos -> {
+            net.minecraft.world.level.block.state.BlockState state = serverLevel.getBlockState(pos);
+            if (com.zipirhavaci.physics.DoorBlastHandler.isDoor(state)) {
+                if (state.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.DOUBLE_BLOCK_HALF) &&
+                        state.getValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.DOUBLE_BLOCK_HALF) != net.minecraft.world.level.block.state.properties.DoubleBlockHalf.LOWER) {
+                    return;
                 }
-            });
-        }
 
+                double distSq = pos.distSqr(impactCenter);
+                boolean isIron = com.zipirhavaci.physics.DoorBlastHandler.isIronLikeDoor(state);
+
+                if (distSq <= breakRadiusSq && !isIron) {
+                    com.zipirhavaci.physics.DoorBlastHandler.blastFromImpact(serverLevel, player, impactVelocity, speed);
+                } else if (distSq <= shakeRadiusSq) {
+                    net.minecraft.world.level.block.state.BlockState topState = serverLevel.getBlockState(pos.above());
+                    triggerDoorShake(serverLevel, pos, state, topState, isIron);
+                }
+            }
+        });
+
+        ACTIVE_DAMAGE_ZONES.add(new ImpactDamageZone(
+                exactHitPos,
+                impact.radius(),
+                player.getUUID(),
+                System.currentTimeMillis() + 20000
+        ));
     }
 
     private static void applyMeteorDamage(Player player, double impactSpeed, double radius, float power) {
@@ -594,7 +597,6 @@ public class ImpactReactionHandler {
 
     private static void spawnDynamicCracks(Player player, double radius, Vec3 normal, Vec3 impactPoint) {
 
-
         if (!(player.level() instanceof net.minecraft.server.level.ServerLevel serverLevel)) return;
 
         BlockPos center = BlockPos.containing(impactPoint).relative(Direction.getNearest(normal.x, normal.y, normal.z).getOpposite());
@@ -610,7 +612,6 @@ public class ImpactReactionHandler {
             final double ringRadius = radius * (0.6 + (i * 0.4));
             final int tickDelay = i * 2;
             com.zipirhavaci.core.ZipirHavaci.SCHEDULER.schedule(() -> {
-                // İşlemi sunucu kuyruğuna ekle
                 serverLevel.getServer().execute(() -> {
                     int particleCount = (int) (24 * ringRadius);
                     for (int j = 0; j < particleCount; j++) {
@@ -618,7 +619,6 @@ public class ImpactReactionHandler {
                         Vec3 spread = tangent.scale(Math.cos(angle) * ringRadius).add(bitangent.scale(Math.sin(angle) * ringRadius));
                         Vec3 spawnPos = player.position().add(normal.scale(0.2)).add(spread);
 
-                        // Chunk yüklü mü kontrolü ekledik (Ekstra Güvenlik)
                         if (serverLevel.isLoaded(BlockPos.containing(spawnPos))) {
                             serverLevel.sendParticles(net.minecraft.core.particles.ParticleTypes.CAMPFIRE_COSY_SMOKE,
                                     spawnPos.x, spawnPos.y, spawnPos.z, 1, 0.05, 0.05, 0.05, 0.02);
@@ -627,213 +627,281 @@ public class ImpactReactionHandler {
                         }
                     }
                 });
-            }, tickDelay * 50, TimeUnit.MILLISECONDS);
+            }, tickDelay * 50, java.util.concurrent.TimeUnit.MILLISECONDS);
         }
 
         double radiusSq = radius * radius;
 
-        java.util.Random sharedRandom = new java.util.Random();
-        
+        java.util.List<BlockPos> validPositions = new java.util.ArrayList<>();
         for (int x = -r; x <= r; x++) {
             for (int y = -r; y <= r; y++) {
                 for (int z = -r; z <= r; z++) {
-                    net.minecraft.core.BlockPos pos = center.offset(x, y, z);
-                    double distSq = pos.distSqr(center);
+                    BlockPos pos = center.offset(x, y, z);
+                    if (pos.distSqr(center) <= radiusSq) {
+                        validPositions.add(pos);
+                    }
+                }
+            }
+        }
 
-                    if (distSq > radiusSq) continue;
-                    if (!serverLevel.isLoaded(pos)) continue;
+        java.util.Collections.shuffle(validPositions, NOISE_RANDOM);
 
-                    net.minecraft.world.level.block.state.BlockState state = player.level().getBlockState(pos);
-                    if (state.isAir()) continue;
+        // --- ASYNC / SYNC YÜRÜTME ---
+        if (r > 8) {
+            CRATER_EXECUTOR.submit(() -> {
+                try {
+                    for (BlockPos pos : validPositions) {
+                        serverLevel.getServer().execute(() -> {
+                            processCraterLogic(player, serverLevel, pos, pos.distSqr(center), radius, impactPoint, normal, center);
+                        });
+                    }
+                    SPAWN_BATCH.clear();
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            });
+            return;
+        }
 
-                    double dist = Math.sqrt(distSq);
-                    int id = pos.hashCode() ^ player.getId();
+        for (BlockPos pos : validPositions) {
+            processCraterLogic(player, serverLevel, pos, pos.distSqr(center), radius, impactPoint, normal, center);
+        }
+        SPAWN_BATCH.clear();
+    }
 
-                    player.level().destroyBlockProgress(id, pos, (int) (9 * (1.0 - dist / radius)));
-                    ACTIVE_CRATERS.put(pos, new CraterBlockData(id, player.getUUID()));
+    private static void processCraterLogic(Player player, net.minecraft.server.level.ServerLevel serverLevel, net.minecraft.core.BlockPos pos, double distSq, double radius, net.minecraft.world.phys.Vec3 impactPoint, net.minecraft.world.phys.Vec3 normal, net.minecraft.core.BlockPos center) {
+        if (!serverLevel.isLoaded(pos)) return;
 
-                    double innerBound = radius * 0.75;
-                    double outerBound = radius + 1.3;
+        long chunkKey = net.minecraft.world.level.ChunkPos.asLong(pos.getX() >> 4, pos.getZ() >> 4);
+        java.util.concurrent.atomic.AtomicInteger chunkCount = CHUNK_CRATER_COUNT.computeIfAbsent(
+                chunkKey, k -> new java.util.concurrent.atomic.AtomicInteger(0)
+        );
 
-                    if (state.isSolidRender(player.level(), pos)) {
-                        double noise = sharedRandom.nextDouble() * 0.4;
-                        if (dist + noise >= innerBound && dist <= outerBound) {
-                            
-                            net.minecraft.world.entity.Display.BlockDisplay display = new net.minecraft.world.entity.Display.BlockDisplay(EntityType.BLOCK_DISPLAY, serverLevel);
-                            serverLevel.addFreshEntity(display);
-                            display.setPos(x, y, z); 
+        if (chunkCount.get() >= MAX_CRATERS_PER_CHUNK) return;
 
-                            net.minecraft.nbt.CompoundTag nbt = new net.minecraft.nbt.CompoundTag();
-                            display.saveWithoutId(nbt);
+        net.minecraft.world.level.block.state.BlockState state = serverLevel.getBlockState(pos);
 
-                            if (display != null) {
-                                try {
-                                    
-                                    nbt.put("block_state", net.minecraft.nbt.NbtUtils.writeBlockState(state));
+        if (state.isAir() || !state.getFluidState().isEmpty()) return;
 
-                                    // HESAPLAMALAR
-                                    net.minecraft.world.phys.Vec3 radialDir = new net.minecraft.world.phys.Vec3(
-                                            pos.getX() - impactPoint.x,
-                                            pos.getY() - impactPoint.y,
-                                            pos.getZ() - impactPoint.z
-                                    ).normalize();
+        double dist = Math.sqrt(distSq);
+        int id = pos.hashCode() ^ player.getId();
 
-                                    double yOffset = (normal.y > 0) ? 0.02 : 0;
-                                    // Pozisyon güncelleme
-                                    display.setPos(pos.getX() + (normal.x * 0.04),
-                                            pos.getY() + (normal.y * 0.04) + yOffset,
-                                            pos.getZ() + (normal.z * 0.04));
+        serverLevel.destroyBlockProgress(id, pos, (int) (9 * (1.0 - dist / radius)));
+        ACTIVE_CRATERS.put(pos, new CraterBlockData(id, player.getUUID()));
 
-                                    float intensity = (float) ((dist - innerBound) / (outerBound - innerBound));
-                                    float randRot = (sharedRandom.nextFloat() - 0.5f) * 0.15f;
+        double innerBound = radius * 0.75;
+        double outerBound = radius + 1.3;
 
-                                    net.minecraft.world.phys.Vec3 push = radialDir.scale(0.12).add(normal.scale(0.06)).scale(intensity);
+        if (!state.getCollisionShape(serverLevel, pos).isEmpty()) {
+            double noise = NOISE_RANDOM.nextDouble() * 0.4;
+            if (dist + noise >= innerBound && dist <= outerBound) {
+                try {
+                    net.minecraft.world.entity.Display.BlockDisplay display = net.minecraft.world.entity.EntityType.BLOCK_DISPLAY.create(serverLevel);
+                    if (display == null) return;
 
-                                    // Görüntüyü yamultan 
-                                    com.mojang.math.Transformation trans = new com.mojang.math.Transformation(
-                                            new org.joml.Vector3f((float)push.x, (float)Math.max(push.y, -0.01f), (float)push.z),
-                                            new org.joml.Quaternionf()
-                                                    .rotateX((float)z * 0.06f * intensity + randRot)
-                                                    .rotateZ((float)-x * 0.06f * intensity + randRot),
-                                            new org.joml.Vector3f(1.04f + (sharedRandom.nextFloat() * 0.02f)),
-                                            null
-                                    );
+                    net.minecraft.world.phys.Vec3 radialDir = new net.minecraft.world.phys.Vec3(
+                            pos.getX() - impactPoint.x,
+                            pos.getY() - impactPoint.y,
+                            pos.getZ() - impactPoint.z
+                    ).normalize();
 
-                                    
-                                    net.minecraft.nbt.CompoundTag transTag = new net.minecraft.nbt.CompoundTag();
-                                    display.saveWithoutId(nbt); 
+                    float intensity = (float) ((dist - innerBound) / (outerBound - innerBound));
 
-                                    
-                                    net.minecraft.nbt.ListTag translation = new net.minecraft.nbt.ListTag();
-                                    translation.add(net.minecraft.nbt.FloatTag.valueOf(trans.getTranslation().x()));
-                                    translation.add(net.minecraft.nbt.FloatTag.valueOf(trans.getTranslation().y()));
-                                    translation.add(net.minecraft.nbt.FloatTag.valueOf(trans.getTranslation().z()));
-                                    transTag.put("translation", translation);
-                                    
-                                    net.minecraft.nbt.ListTag scale = new net.minecraft.nbt.ListTag();
-                                    scale.add(net.minecraft.nbt.FloatTag.valueOf(trans.getScale().x()));
-                                    scale.add(net.minecraft.nbt.FloatTag.valueOf(trans.getScale().y()));
-                                    scale.add(net.minecraft.nbt.FloatTag.valueOf(trans.getScale().z()));
-                                    transTag.put("scale", scale);
+                    float randomPitch = (NOISE_RANDOM.nextFloat() - 0.5f) * 60f * intensity;
+                    float randomYaw = (NOISE_RANDOM.nextFloat() - 0.5f) * 60f * intensity;
+                    float randomRoll = (NOISE_RANDOM.nextFloat() - 0.5f) * 60f * intensity;
 
-                                    // Left Rotation 
-                                    org.joml.Quaternionf left = trans.getLeftRotation();
-                                    net.minecraft.nbt.ListTag leftRot = new net.minecraft.nbt.ListTag();
-                                    leftRot.add(net.minecraft.nbt.FloatTag.valueOf(left.x));
-                                    leftRot.add(net.minecraft.nbt.FloatTag.valueOf(left.y));
-                                    leftRot.add(net.minecraft.nbt.FloatTag.valueOf(left.z));
-                                    leftRot.add(net.minecraft.nbt.FloatTag.valueOf(left.w));
-                                    transTag.put("left_rotation", leftRot);
+                    org.joml.Quaternionf rotation = new org.joml.Quaternionf()
+                            .rotateXYZ(
+                                    (float)Math.toRadians(randomPitch),
+                                    (float)Math.toRadians(randomYaw),
+                                    (float)Math.toRadians(randomRoll)
+                            );
 
-                                    // Right Rotation 
-                                    org.joml.Quaternionf right = trans.getRightRotation();
-                                    if (right != null) {
-                                        net.minecraft.nbt.ListTag rightRot = new net.minecraft.nbt.ListTag();
-                                        rightRot.add(net.minecraft.nbt.FloatTag.valueOf(right.x));
-                                        rightRot.add(net.minecraft.nbt.FloatTag.valueOf(right.y));
-                                        rightRot.add(net.minecraft.nbt.FloatTag.valueOf(right.z));
-                                        rightRot.add(net.minecraft.nbt.FloatTag.valueOf(right.w));
-                                        transTag.put("right_rotation", rightRot);
-                                    }
 
-                                    
-                                    nbt.put("transformation", transTag);
-                                    display.addTag("zipir_krater_fx");
-                                    nbt.putBoolean("NoSave", true);
+                    net.minecraft.world.phys.Vec3 push = radialDir.scale(0.24).add(normal.scale(0.12)).scale(intensity);
 
-                                    // Brightness ayarı
-                                    net.minecraft.nbt.CompoundTag brightness = new net.minecraft.nbt.CompoundTag();
-                                    brightness.putInt("block", 7);
-                                    brightness.putInt("sky", 7);
-                                    nbt.put("brightness", brightness);
-                                    
-                                    nbt.put("block_state", net.minecraft.nbt.NbtUtils.writeBlockState(state));
-                                    
-                                    display.load(nbt);
-                                    serverLevel.addFreshEntity(display);
+                    com.mojang.math.Transformation trans = new com.mojang.math.Transformation(
+                            new org.joml.Vector3f((float)push.x, (float)Math.max(push.y, -0.01), (float)push.z),
+                            rotation,
+                            new org.joml.Vector3f(1.06f + (NOISE_RANDOM.nextFloat() * 0.06f)),
+                            null
+                    );
 
-                                    PLAYER_CRATERS.computeIfAbsent(player.getUUID(), k -> new java.util.ArrayList<>()).add(display);
+                    net.minecraft.nbt.CompoundTag mainTag = new net.minecraft.nbt.CompoundTag();
+                    net.minecraft.nbt.CompoundTag transTag = new net.minecraft.nbt.CompoundTag();
 
-                                    // Zamanlayıcı
-                                    com.zipirhavaci.core.ZipirHavaci.SCHEDULER.schedule(() -> {
-                                        serverLevel.getServer().execute(() -> {
-                                            if (display != null && !display.isRemoved()) {
-                                                display.discard();
-                                                if (activeCraterCount > 0) activeCraterCount--;
-                                            }
-                                        });
-                                    }, 20, java.util.concurrent.TimeUnit.SECONDS);
+                    net.minecraft.nbt.ListTag translation = new net.minecraft.nbt.ListTag();
+                    translation.add(net.minecraft.nbt.FloatTag.valueOf(trans.getTranslation().x()));
+                    translation.add(net.minecraft.nbt.FloatTag.valueOf(trans.getTranslation().y()));
+                    translation.add(net.minecraft.nbt.FloatTag.valueOf(trans.getTranslation().z()));
+                    transTag.put("translation", translation);
 
-                                } catch (Exception e) {
-                                    e.printStackTrace();
+                    net.minecraft.nbt.ListTag scale = new net.minecraft.nbt.ListTag();
+                    scale.add(net.minecraft.nbt.FloatTag.valueOf(trans.getScale().x()));
+                    scale.add(net.minecraft.nbt.FloatTag.valueOf(trans.getScale().y()));
+                    scale.add(net.minecraft.nbt.FloatTag.valueOf(trans.getScale().z()));
+                    transTag.put("scale", scale);
+
+                    org.joml.Quaternionf left = trans.getLeftRotation();
+                    net.minecraft.nbt.ListTag leftRot = new net.minecraft.nbt.ListTag();
+                    leftRot.add(net.minecraft.nbt.FloatTag.valueOf(left.x));
+                    leftRot.add(net.minecraft.nbt.FloatTag.valueOf(left.y));
+                    leftRot.add(net.minecraft.nbt.FloatTag.valueOf(left.z));
+                    leftRot.add(net.minecraft.nbt.FloatTag.valueOf(left.w));
+                    transTag.put("left_rotation", leftRot);
+
+                    net.minecraft.nbt.ListTag rightRot = new net.minecraft.nbt.ListTag();
+                    rightRot.add(net.minecraft.nbt.FloatTag.valueOf(0f));
+                    rightRot.add(net.minecraft.nbt.FloatTag.valueOf(0f));
+                    rightRot.add(net.minecraft.nbt.FloatTag.valueOf(0f));
+                    rightRot.add(net.minecraft.nbt.FloatTag.valueOf(1f));
+                    transTag.put("right_rotation", rightRot);
+
+                    mainTag.put("transformation", transTag);
+                    mainTag.putInt("interpolation_duration", 2);
+                    mainTag.putInt("start_interpolation", 0);
+                    mainTag.putInt("teleport_duration", 0);
+
+                    net.minecraft.nbt.CompoundTag brightnessTag = new net.minecraft.nbt.CompoundTag();
+                    brightnessTag.putInt("block", 15);
+                    brightnessTag.putInt("sky", 15);
+                    mainTag.put("brightness", brightnessTag);
+
+                    mainTag.put("block_state", net.minecraft.nbt.NbtUtils.writeBlockState(state));
+                    mainTag.putFloat("view_range", 0.8f);
+                    mainTag.putBoolean("NoSave", true);
+
+                    display.load(mainTag);
+
+                    double yOffset = (normal.y > 0) ? 0.02 : 0;
+
+                    display.setPos(
+                            pos.getX() + (normal.x * 0.04),
+                            pos.getY() + (normal.y * 0.04) + yOffset,
+                            pos.getZ() + (normal.z * 0.04)
+                    );
+
+                    display.addTag("zipir_krater_fx");
+
+                    if (serverLevel.addFreshEntity(display)) {
+                        int displayId = display.getId();
+                        PLAYER_CRATERS_IDS.computeIfAbsent(player.getUUID(), k -> new java.util.ArrayList<>()).add(displayId);
+                        ACTIVE_CRATERS_MAP.put(pos.asLong(), new CraterBlockData(id, player.getUUID()));
+                        chunkCount.incrementAndGet();
+
+                        com.zipirhavaci.core.ZipirHavaci.SCHEDULER.schedule(() -> {
+                            serverLevel.getServer().execute(() -> {
+                                net.minecraft.world.entity.Entity e = serverLevel.getEntity(displayId);
+                                if (e != null && !e.isRemoved()) {
+                                    e.discard();
+                                    if (activeCraterCount > 0) activeCraterCount--;
+                                    chunkCount.decrementAndGet();
                                 }
+                            });
+                        }, 20, java.util.concurrent.TimeUnit.SECONDS);
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+
+    // OPTİMİZASYON
+    private static final java.util.concurrent.atomic.AtomicLong LAST_CRATER_UPDATE = new java.util.concurrent.atomic.AtomicLong(0);
+
+    public static void updateActiveCraters(net.minecraft.server.level.ServerLevel sl) {
+
+        if (ACTIVE_CRATERS_MAP.isEmpty() && ACTIVE_DAMAGE_ZONES.isEmpty()) return;
+
+        long now = System.currentTimeMillis();
+        // 500ms
+        if (now - LAST_CRATER_UPDATE.get() < 500) return;
+        LAST_CRATER_UPDATE.set(now);
+
+        if (!ACTIVE_DAMAGE_ZONES.isEmpty()) {
+            ACTIVE_DAMAGE_ZONES.removeIf(zone -> now > zone.expireTime());
+
+            // Zoneları gruplara ayır (Mesafe bazlı)
+            List<List<ImpactDamageZone>> groups = new ArrayList<>();
+
+            for (ImpactDamageZone zone : ACTIVE_DAMAGE_ZONES) {
+                boolean added = false;
+                for (List<ImpactDamageZone> group : groups) {
+                    // Grubun ilk elemanına olan mesafeye bak (veya merkeze)
+                    if (zone.center().distanceToSqr(group.get(0).center()) < 14400) { // 120 * 120 = 14400
+                        group.add(zone);
+                        added = true;
+                        break;
+                    }
+                }
+                if (!added) {
+                    List<ImpactDamageZone> newGroup = new ArrayList<>();
+                    newGroup.add(zone);
+                    groups.add(newGroup);
+                }
+            }
+
+            // Her grubu kendi combinedBox'ı ile tara
+            for (List<ImpactDamageZone> group : groups) {
+                AABB combinedBox = null;
+                for (ImpactDamageZone z : group) {
+                    double r = z.radius();
+                    AABB effectBox = AABB.ofSize(z.center(), r * 2.5, r * 2.5, r * 2.5);
+                    combinedBox = (combinedBox == null) ? effectBox : combinedBox.minmax(effectBox);
+                }
+
+                if (combinedBox != null) {
+                    List<LivingEntity> entitiesInGroup = sl.getEntitiesOfClass(LivingEntity.class, combinedBox);
+                    for (ImpactDamageZone z : group) {
+                        double rSq = z.radius() * z.radius();
+                        for (LivingEntity e : entitiesInGroup) {
+                            if (e.position().distanceToSqr(z.center()) <= rSq) {
+                                float damage = (e instanceof Player p && p.getUUID().equals(z.owner())) ? 0.12f : 0.25f;
+                                e.hurt(sl.damageSources().genericKill(), damage);
                             }
                         }
                     }
                 }
             }
         }
-        SPAWN_BATCH.clear();
-        
-    }
 
-    // OPTİMİZASYON: Aktif kraterleri saniyede 1 kez güncelle
-    private static final java.util.concurrent.atomic.AtomicLong LAST_CRATER_UPDATE = new java.util.concurrent.atomic.AtomicLong(0);
+        if (!ACTIVE_CRATERS_MAP.isEmpty()) {
+            java.util.Iterator<java.util.Map.Entry<Long, CraterBlockData>> it = ACTIVE_CRATERS_MAP.entrySet().iterator();
+            while (it.hasNext()) {
+                java.util.Map.Entry<Long, CraterBlockData> entry = it.next();
+                net.minecraft.core.BlockPos pos = net.minecraft.core.BlockPos.of(entry.getKey());
+                CraterBlockData data = entry.getValue();
 
-    public static void updateActiveCraters(net.minecraft.server.level.ServerLevel sl) {
-        if (ACTIVE_CRATERS.isEmpty()) return;
-
-        long now = System.currentTimeMillis();
-        if (now - LAST_CRATER_UPDATE.get() < 1000) return;
-        LAST_CRATER_UPDATE.set(now);
-
-        // 2. DÖNGÜ VE MANTIK ANALİZİ
-        Iterator<Map.Entry<BlockPos, CraterBlockData>> it = ACTIVE_CRATERS.entrySet().iterator();
-        while (it.hasNext()) {
-            Map.Entry<BlockPos, CraterBlockData> entry = it.next();
-            BlockPos pos = entry.getKey();
-            CraterBlockData data = entry.getValue();
-
-            // SÜRE DOLMA KONTROLÜ
-            if (data.isExpired()) {
-                if (sl.isLoaded(pos)) {
-                    sl.destroyBlockProgress(data.destroyId, pos, -1);
-                    sl.getEntities((net.minecraft.world.entity.Entity) null, new AABB(pos).inflate(1.2),
-                            e -> e.getTags().contains("zipir_krater_fx")).forEach(net.minecraft.world.entity.Entity::discard);
+                // Süresi dolan bloğu temizle
+                if (data.isExpired()) {
+                    if (sl.isLoaded(pos)) {
+                        sl.destroyBlockProgress(data.destroyId, pos, -1);
+                        sl.getEntities((net.minecraft.world.entity.Entity) null, new net.minecraft.world.phys.AABB(pos),
+                                e -> e.getTags().contains("zipir_krater_fx")).forEach(net.minecraft.world.entity.Entity::discard);
+                    }
+                    if (activeCraterCount > 0) activeCraterCount--;
+                    it.remove();
+                    continue;
                 }
-                if (activeCraterCount > 0) activeCraterCount--;
-                it.remove();
-                continue;
-            }
 
-            if (!sl.isLoaded(pos)) continue;
+                if (!sl.isLoaded(pos)) continue;
 
-            int elapsed = data.getElapsedSeconds();
+                int elapsed = data.getElapsedSeconds();
 
-            // GÖRSEL EFEKTLER (SMOKE)
-            sl.sendParticles(net.minecraft.core.particles.ParticleTypes.SMOKE,
-                    pos.getX() + 0.5, pos.getY() + 1.1, pos.getZ() + 0.5, 1, 0.1, 0.1, 0.1, 0.01);
+                sl.sendParticles(net.minecraft.core.particles.ParticleTypes.SMOKE,
+                        pos.getX() + 0.5, pos.getY() + 1.1, pos.getZ() + 0.5, 1, 0.1, 0.1, 0.1, 0.01);
 
-            // ATEŞ EFEKTİ
-            if (elapsed % 3 == 0) {
-                sl.sendParticles(net.minecraft.core.particles.ParticleTypes.FLAME,
-                        pos.getX() + 0.5, pos.getY() + 1.1, pos.getZ() + 0.5, 1, 0.1, 0.02, 0.1, 0.01);
-            }
-
-            // ALAN HASARI
-            List<LivingEntity> entities = sl.getEntitiesOfClass(LivingEntity.class, new AABB(pos.above()));
-            for (LivingEntity e : entities) {
-                float damage = 0.25f;
-                if (e instanceof Player p && p.getUUID().equals(data.ownerUUID)) {
-                    damage = 0.12f;
+                if (elapsed % 3 == 0) {
+                    sl.sendParticles(net.minecraft.core.particles.ParticleTypes.FLAME,
+                            pos.getX() + 0.5, pos.getY() + 1.1, pos.getZ() + 0.5, 1, 0.1, 0.02, 0.1, 0.01);
                 }
-                e.hurt(sl.damageSources().genericKill(), damage);
-            }
 
-            // SES
-            if (elapsed % 5 == 0) {
-                sl.playSound(null, pos, net.minecraft.sounds.SoundEvents.FIRE_AMBIENT,
-                        net.minecraft.sounds.SoundSource.BLOCKS, 0.2f, 0.6f);
+                if (elapsed % 5 == 0) {
+                    sl.playSound(null, pos, net.minecraft.sounds.SoundEvents.FIRE_AMBIENT,
+                            net.minecraft.sounds.SoundSource.BLOCKS, 0.2f, 0.6f);
+                }
             }
         }
     }
@@ -845,32 +913,37 @@ public class ImpactReactionHandler {
 
 
     public static void onPlayerQuit(net.minecraftforge.event.entity.player.PlayerEvent.PlayerLoggedOutEvent event) {
-        UUID uuid = event.getEntity().getUUID();
+        java.util.UUID uuid = event.getEntity().getUUID();
+        net.minecraft.world.entity.player.Player player = event.getEntity();
 
-        // 1. ENTITY TEMİZLİĞİ (Blok Displayleri Siler)
-        List<net.minecraft.world.entity.Entity> craters = PLAYER_CRATERS.remove(uuid);
-        if (craters != null) {
-            for (net.minecraft.world.entity.Entity crater : craters) {
-                if (crater != null && crater.isAlive()) {
+        java.util.List<Integer> craterIds = PLAYER_CRATERS_IDS.remove(uuid);
+
+        if (craterIds != null && player.level() instanceof net.minecraft.server.level.ServerLevel sl) {
+            for (int entityId : craterIds) {
+                net.minecraft.world.entity.Entity crater = sl.getEntity(entityId);
+                if (crater != null) {
                     crater.discard();
+                    // Global krater sayacını güvenli şekilde düşür
                     if (activeCraterCount > 0) activeCraterCount--;
                 }
             }
         }
 
-        // 2. BLOK PROGRESS TEMİZLİĞİ
-        // Oyuncunun oluşturduğu çatlakları ACTIVE_CRATERS map
-        if (event.getEntity().level() instanceof net.minecraft.server.level.ServerLevel sl) {
-            ACTIVE_CRATERS.entrySet().removeIf(entry -> {
-                if (entry.getValue().ownerUUID.equals(uuid)) {
-                    sl.destroyBlockProgress(entry.getValue().destroyId, entry.getKey(), -1);
+        if (player.level() instanceof net.minecraft.server.level.ServerLevel sl) {
+
+            ACTIVE_CRATERS_MAP.entrySet().removeIf(entry -> {
+                CraterBlockData data = entry.getValue();
+                if (data.ownerUUID.equals(uuid)) {
+
+                    sl.destroyBlockProgress(data.destroyId, net.minecraft.core.BlockPos.of(entry.getKey()), -1);
                     return true;
                 }
                 return false;
             });
+
+            ACTIVE_DAMAGE_ZONES.removeIf(zone -> zone.owner().equals(uuid));
         }
 
-        // 3. GENEL VERİ TEMİZLİĞİ
         CHARGE.remove(uuid);
         COOLDOWN.remove(uuid);
         SONIC_PLAYED.remove(uuid);
@@ -878,6 +951,7 @@ public class ImpactReactionHandler {
         FALL_TICKS.remove(uuid);
         MAX_FALL_SPEED.remove(uuid);
 
+        // Emniyet kilidi: Negatif sayıya düşmeyi önle
         if (activeCraterCount < 0) activeCraterCount = 0;
     }
 
@@ -885,6 +959,9 @@ public class ImpactReactionHandler {
     public static void onServerStopping(net.minecraftforge.event.server.ServerStoppingEvent event) {
         activeCraterCount = 0;
         ACTIVE_CRATERS.clear();
+        ACTIVE_CRATERS_MAP.clear();
+        ACTIVE_DAMAGE_ZONES.clear();
+        PLAYER_CRATERS_IDS.clear();
     }
 
     private static void applyVehicleImpact(Player player, Vec3 impactPos, double impactSpeed) {
