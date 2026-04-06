@@ -10,12 +10,15 @@ import net.minecraft.Util;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.NbtUtils;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.Display;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.decoration.ArmorStand;
@@ -35,46 +38,29 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.level.ClipContext;
+import net.minecraftforge.common.util.TransformationHelper;
 import net.minecraftforge.event.LootTableLoadEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.*;
+import com.mojang.math.Transformation;
+import org.joml.Quaternionf;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
+import static com.ibm.icu.impl.ValidIdentifiers.Datatype.x;
 import static com.zipirhavaci.physics.MovementHandler.isIronLikeDoor;
 import static com.zipirhavaci.physics.MovementHandler.triggerDoorShake;
 
 @Mod.EventBusSubscriber(modid = "zipirhavaci", bus = Mod.EventBusSubscriber.Bus.FORGE)
 public class ImpactReactionHandler {
 
-
-    private static java.lang.reflect.Method SET_BLOCK_STATE_METHOD;
-    private static java.lang.reflect.Method SET_TRANSFORMATION_METHOD;
-
     private static final Map<UUID, List<net.minecraft.world.entity.Entity>> PLAYER_CRATERS = new ConcurrentHashMap<>();
-
-    static {
-        try {
-
-            SET_BLOCK_STATE_METHOD = net.minecraft.world.entity.Display.BlockDisplay.class
-                    .getDeclaredMethod("setBlockState", BlockState.class);
-            SET_BLOCK_STATE_METHOD.setAccessible(true);
-
-
-            SET_TRANSFORMATION_METHOD = net.minecraft.world.entity.Display.class
-                    .getDeclaredMethod("setTransformation", com.mojang.math.Transformation.class);
-            SET_TRANSFORMATION_METHOD.setAccessible(true);
-
-        } catch (Exception e) {
-            System.err.println("Focus Forge: Reflection anahtarları hazırlanamadı!");
-            e.printStackTrace();
-        }
-    }
-
 
     private static final Map<UUID, Integer> CHARGE = new ConcurrentHashMap<>();
     private static final Map<UUID, Long> COOLDOWN = new ConcurrentHashMap<>();
@@ -87,6 +73,13 @@ public class ImpactReactionHandler {
     private static final Map<UUID, Integer> FALL_TICKS = new ConcurrentHashMap<>();
     private static final Map<UUID, Double> MAX_FALL_SPEED = new ConcurrentHashMap<>();
     private static int activeCraterCount = 0;
+    private static final CompoundTag REUSABLE_BRIGHTNESS = new CompoundTag();
+    private static final List<Display.BlockDisplay> SPAWN_BATCH = new java.util.ArrayList<>();
+    private static final java.util.Map<Integer, com.mojang.math.Transformation> TRANSFORMATION_CACHE = new java.util.HashMap<>();
+    private static final CompoundTag REUSABLE_NBT = new CompoundTag();
+    private static final CompoundTag REUSABLE_TRANS_TAG = new CompoundTag();
+
+
 
     // OPTİMİZASYON: Aktif krater blokları (Thread-safe)
     private static final Map<BlockPos, CraterBlockData> ACTIVE_CRATERS = new ConcurrentHashMap<>();
@@ -616,7 +609,6 @@ public class ImpactReactionHandler {
         for (int i = 0; i < 3; i++) {
             final double ringRadius = radius * (0.6 + (i * 0.4));
             final int tickDelay = i * 2;
-            // YENİ HALİ
             com.zipirhavaci.core.ZipirHavaci.SCHEDULER.schedule(() -> {
                 // İşlemi sunucu kuyruğuna ekle
                 serverLevel.getServer().execute(() -> {
@@ -640,89 +632,137 @@ public class ImpactReactionHandler {
 
         double radiusSq = radius * radius;
 
+        java.util.Random sharedRandom = new java.util.Random();
+        
         for (int x = -r; x <= r; x++) {
             for (int y = -r; y <= r; y++) {
                 for (int z = -r; z <= r; z++) {
-                    BlockPos pos = center.offset(x, y, z);
+                    net.minecraft.core.BlockPos pos = center.offset(x, y, z);
                     double distSq = pos.distSqr(center);
 
-                    // sqrt almadan elek — sadece çember içindekiler geçer
                     if (distSq > radiusSq) continue;
-
                     if (!serverLevel.isLoaded(pos)) continue;
 
-                    BlockState state = player.level().getBlockState(pos);
-
+                    net.minecraft.world.level.block.state.BlockState state = player.level().getBlockState(pos);
                     if (state.isAir()) continue;
 
-                    // Artık sqrt ye ihtiyaç olan yerlerde bir kez al
                     double dist = Math.sqrt(distSq);
-
                     int id = pos.hashCode() ^ player.getId();
-                    player.level().destroyBlockProgress(id, pos, (int) (9 * (1.0 - dist / radius)));
 
-                    //  Bloğu Map e kaydet
+                    player.level().destroyBlockProgress(id, pos, (int) (9 * (1.0 - dist / radius)));
                     ACTIVE_CRATERS.put(pos, new CraterBlockData(id, player.getUUID()));
 
                     double innerBound = radius * 0.75;
                     double outerBound = radius + 1.3;
-                    java.util.Random random = new java.util.Random();
 
                     if (state.isSolidRender(player.level(), pos)) {
-                        double noise = random.nextDouble() * 0.4;
+                        double noise = sharedRandom.nextDouble() * 0.4;
                         if (dist + noise >= innerBound && dist <= outerBound) {
-                            net.minecraft.world.entity.Display.BlockDisplay display = EntityType.BLOCK_DISPLAY.create(serverLevel);
+                            
+                            net.minecraft.world.entity.Display.BlockDisplay display = new net.minecraft.world.entity.Display.BlockDisplay(EntityType.BLOCK_DISPLAY, serverLevel);
+                            serverLevel.addFreshEntity(display);
+                            display.setPos(x, y, z); 
+
+                            net.minecraft.nbt.CompoundTag nbt = new net.minecraft.nbt.CompoundTag();
+                            display.saveWithoutId(nbt);
+
                             if (display != null) {
                                 try {
+                                    
+                                    nbt.put("block_state", net.minecraft.nbt.NbtUtils.writeBlockState(state));
 
-                                    if (SET_BLOCK_STATE_METHOD != null) {
-                                        SET_BLOCK_STATE_METHOD.invoke(display, state);
-                                    }
+                                    // HESAPLAMALAR
+                                    net.minecraft.world.phys.Vec3 radialDir = new net.minecraft.world.phys.Vec3(
+                                            pos.getX() - impactPoint.x,
+                                            pos.getY() - impactPoint.y,
+                                            pos.getZ() - impactPoint.z
+                                    ).normalize();
 
-                                    Vec3 radialDir = new Vec3(pos.getX() - impactPoint.x, pos.getY() - impactPoint.y, pos.getZ() - impactPoint.z).normalize();
                                     double yOffset = (normal.y > 0) ? 0.02 : 0;
-                                    display.setPos(pos.getX() + (normal.x * 0.04), pos.getY() + (normal.y * 0.04) + yOffset, pos.getZ() + (normal.z * 0.04));
+                                    // Pozisyon güncelleme
+                                    display.setPos(pos.getX() + (normal.x * 0.04),
+                                            pos.getY() + (normal.y * 0.04) + yOffset,
+                                            pos.getZ() + (normal.z * 0.04));
 
                                     float intensity = (float) ((dist - innerBound) / (outerBound - innerBound));
-                                    float randRot = (random.nextFloat() - 0.5f) * 0.15f;
+                                    float randRot = (sharedRandom.nextFloat() - 0.5f) * 0.15f;
 
-                                    Vec3 push = radialDir.scale(0.12).add(normal.scale(0.06)).scale(intensity);
+                                    net.minecraft.world.phys.Vec3 push = radialDir.scale(0.12).add(normal.scale(0.06)).scale(intensity);
 
+                                    // Görüntüyü yamultan 
                                     com.mojang.math.Transformation trans = new com.mojang.math.Transformation(
-                                            new org.joml.Vector3f((float)push.x, (float)Math.max(push.y, -0.01), (float)push.z),
-                                            new org.joml.Quaternionf().rotateX((float)z * 0.06f * intensity + randRot).rotateZ((float)-x * 0.06f * intensity + randRot),
-                                            new org.joml.Vector3f(1.04f + (random.nextFloat() * 0.02f)),
-                                            null);
+                                            new org.joml.Vector3f((float)push.x, (float)Math.max(push.y, -0.01f), (float)push.z),
+                                            new org.joml.Quaternionf()
+                                                    .rotateX((float)z * 0.06f * intensity + randRot)
+                                                    .rotateZ((float)-x * 0.06f * intensity + randRot),
+                                            new org.joml.Vector3f(1.04f + (sharedRandom.nextFloat() * 0.02f)),
+                                            null
+                                    );
 
+                                    
+                                    net.minecraft.nbt.CompoundTag transTag = new net.minecraft.nbt.CompoundTag();
+                                    display.saveWithoutId(nbt); 
 
-                                    if (SET_TRANSFORMATION_METHOD != null) {
-                                        SET_TRANSFORMATION_METHOD.invoke(display, trans);
+                                    
+                                    net.minecraft.nbt.ListTag translation = new net.minecraft.nbt.ListTag();
+                                    translation.add(net.minecraft.nbt.FloatTag.valueOf(trans.getTranslation().x()));
+                                    translation.add(net.minecraft.nbt.FloatTag.valueOf(trans.getTranslation().y()));
+                                    translation.add(net.minecraft.nbt.FloatTag.valueOf(trans.getTranslation().z()));
+                                    transTag.put("translation", translation);
+                                    
+                                    net.minecraft.nbt.ListTag scale = new net.minecraft.nbt.ListTag();
+                                    scale.add(net.minecraft.nbt.FloatTag.valueOf(trans.getScale().x()));
+                                    scale.add(net.minecraft.nbt.FloatTag.valueOf(trans.getScale().y()));
+                                    scale.add(net.minecraft.nbt.FloatTag.valueOf(trans.getScale().z()));
+                                    transTag.put("scale", scale);
+
+                                    // Left Rotation 
+                                    org.joml.Quaternionf left = trans.getLeftRotation();
+                                    net.minecraft.nbt.ListTag leftRot = new net.minecraft.nbt.ListTag();
+                                    leftRot.add(net.minecraft.nbt.FloatTag.valueOf(left.x));
+                                    leftRot.add(net.minecraft.nbt.FloatTag.valueOf(left.y));
+                                    leftRot.add(net.minecraft.nbt.FloatTag.valueOf(left.z));
+                                    leftRot.add(net.minecraft.nbt.FloatTag.valueOf(left.w));
+                                    transTag.put("left_rotation", leftRot);
+
+                                    // Right Rotation 
+                                    org.joml.Quaternionf right = trans.getRightRotation();
+                                    if (right != null) {
+                                        net.minecraft.nbt.ListTag rightRot = new net.minecraft.nbt.ListTag();
+                                        rightRot.add(net.minecraft.nbt.FloatTag.valueOf(right.x));
+                                        rightRot.add(net.minecraft.nbt.FloatTag.valueOf(right.y));
+                                        rightRot.add(net.minecraft.nbt.FloatTag.valueOf(right.z));
+                                        rightRot.add(net.minecraft.nbt.FloatTag.valueOf(right.w));
+                                        transTag.put("right_rotation", rightRot);
                                     }
 
+                                    
+                                    nbt.put("transformation", transTag);
                                     display.addTag("zipir_krater_fx");
-                                    CompoundTag nbt = new CompoundTag();
-                                    display.saveWithoutId(nbt);
                                     nbt.putBoolean("NoSave", true);
-                                    CompoundTag brightness = new CompoundTag();
+
+                                    // Brightness ayarı
+                                    net.minecraft.nbt.CompoundTag brightness = new net.minecraft.nbt.CompoundTag();
                                     brightness.putInt("block", 7);
                                     brightness.putInt("sky", 7);
                                     nbt.put("brightness", brightness);
+                                    
+                                    nbt.put("block_state", net.minecraft.nbt.NbtUtils.writeBlockState(state));
+                                    
                                     display.load(nbt);
-
                                     serverLevel.addFreshEntity(display);
 
-                                    PLAYER_CRATERS.computeIfAbsent(player.getUUID(), k -> new ArrayList<>()).add(display);
+                                    PLAYER_CRATERS.computeIfAbsent(player.getUUID(), k -> new java.util.ArrayList<>()).add(display);
 
+                                    // Zamanlayıcı
                                     com.zipirhavaci.core.ZipirHavaci.SCHEDULER.schedule(() -> {
                                         serverLevel.getServer().execute(() -> {
                                             if (display != null && !display.isRemoved()) {
                                                 display.discard();
-                                                if (activeCraterCount > 0) {
-                                                    activeCraterCount--;
-                                                }
+                                                if (activeCraterCount > 0) activeCraterCount--;
                                             }
                                         });
-                                    }, 20, TimeUnit.SECONDS);
+                                    }, 20, java.util.concurrent.TimeUnit.SECONDS);
 
                                 } catch (Exception e) {
                                     e.printStackTrace();
@@ -733,6 +773,8 @@ public class ImpactReactionHandler {
                 }
             }
         }
+        SPAWN_BATCH.clear();
+        
     }
 
     // OPTİMİZASYON: Aktif kraterleri saniyede 1 kez güncelle
