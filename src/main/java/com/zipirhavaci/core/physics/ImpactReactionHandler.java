@@ -830,25 +830,21 @@ public class ImpactReactionHandler {
     private static final java.util.concurrent.atomic.AtomicLong LAST_CRATER_UPDATE = new java.util.concurrent.atomic.AtomicLong(0);
 
     public static void updateActiveCraters(net.minecraft.server.level.ServerLevel sl) {
-
         if (ACTIVE_CRATERS_MAP.isEmpty() && ACTIVE_DAMAGE_ZONES.isEmpty()) return;
 
         long now = System.currentTimeMillis();
-        // 500ms
         if (now - LAST_CRATER_UPDATE.get() < 500) return;
         LAST_CRATER_UPDATE.set(now);
 
+        //  HASAR BÖLGELERİ YÖNETİMİ
         if (!ACTIVE_DAMAGE_ZONES.isEmpty()) {
             ACTIVE_DAMAGE_ZONES.removeIf(zone -> now > zone.expireTime());
 
-            // Zoneları gruplara ayır (Mesafe bazlı)
             List<List<ImpactDamageZone>> groups = new ArrayList<>();
-
             for (ImpactDamageZone zone : ACTIVE_DAMAGE_ZONES) {
                 boolean added = false;
                 for (List<ImpactDamageZone> group : groups) {
-                    // Grubun ilk elemanına olan mesafeye bak (veya merkeze)
-                    if (zone.center().distanceToSqr(group.get(0).center()) < 14400) { // 120 * 120 = 14400
+                    if (zone.center().distanceToSqr(group.get(0).center()) < 14400) {
                         group.add(zone);
                         added = true;
                         break;
@@ -861,7 +857,6 @@ public class ImpactReactionHandler {
                 }
             }
 
-            // Her grubu kendi combinedBox ı ile tara
             for (List<ImpactDamageZone> group : groups) {
                 AABB combinedBox = null;
                 for (ImpactDamageZone z : group) {
@@ -885,18 +880,21 @@ public class ImpactReactionHandler {
             }
         }
 
+        // 2. KRATER VE GHOST BLOCK YÖNETİMİ
         if (!ACTIVE_CRATERS_MAP.isEmpty()) {
-            java.util.Iterator<java.util.Map.Entry<Long, CraterBlockData>> it = ACTIVE_CRATERS_MAP.entrySet().iterator();
 
-            while (it.hasNext()) {
-                java.util.Map.Entry<Long, CraterBlockData> entry = it.next();
-                net.minecraft.core.BlockPos pos = net.minecraft.core.BlockPos.of(entry.getKey());
-                CraterBlockData data = entry.getValue();
+            long[] keys = ACTIVE_CRATERS_MAP.keySet().toLongArray();
 
-                //Chunk kontrolü
+            for (long key : keys) {
+                CraterBlockData data = ACTIVE_CRATERS_MAP.get(key);
+                if (data == null) continue;
+
+                net.minecraft.core.BlockPos pos = net.minecraft.core.BlockPos.of(key);
+
+                // Chunk yüklü değilse temizle ve devam et
                 if (!sl.isLoaded(pos)) {
-                    ImpactReactionHandler.forceClearChunkData(new ChunkPos(pos));
-                    it.remove();
+                    ImpactReactionHandler.forceClearChunkData(new net.minecraft.world.level.ChunkPos(pos));
+                    ACTIVE_CRATERS_MAP.remove(key);
                     continue;
                 }
 
@@ -906,23 +904,23 @@ public class ImpactReactionHandler {
                 if (data.isExpired() || isFarAway) {
                     sl.destroyBlockProgress(data.destroyId, pos, -1);
 
-                    sl.getEntities(EntityTypeTest.forClass(Entity.class),
+                    // FX Entity lerini temizle
+                    sl.getEntities(net.minecraft.world.level.entity.EntityTypeTest.forClass(net.minecraft.world.entity.Entity.class),
                                     new AABB(pos).inflate(1.5),
                                     e -> e.getTags().contains("zipir_krater_fx"))
                             .forEach(e -> {
                                 if (!e.isRemoved()) {
-                                    ImpactReactionHandler.onDisplayRemoved(e.getId(), new ChunkPos(e.blockPosition()));
+                                    ImpactReactionHandler.onDisplayRemoved(e.getId(), new net.minecraft.world.level.ChunkPos(e.blockPosition()));
                                     e.discard();
                                 }
                             });
 
-                    it.remove();
+                    ACTIVE_CRATERS_MAP.remove(key);
                     continue;
                 }
 
-                //Efektler
+                // GÖRSEL EFEKTLER
                 int elapsed = data.getElapsedSeconds();
-
                 sl.sendParticles(net.minecraft.core.particles.ParticleTypes.SMOKE,
                         pos.getX() + 0.5, pos.getY() + 1.1, pos.getZ() + 0.5, 1, 0.1, 0.1, 0.1, 0.01);
 
@@ -942,7 +940,6 @@ public class ImpactReactionHandler {
             ghostCleanupTimer = 0;
             runGhostCleanup(sl);
         }
-
     }
 
     public static long getRemainingCooldown(UUID playerUUID) {
