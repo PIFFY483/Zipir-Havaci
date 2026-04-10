@@ -12,6 +12,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtUtils;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundEvents;
@@ -19,6 +20,7 @@ import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Display;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.decoration.ArmorStand;
@@ -28,6 +30,7 @@ import net.minecraft.world.entity.vehicle.Boat;
 import net.minecraft.world.item.*;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.entity.EntityTypeTest;
 import net.minecraft.world.level.storage.loot.LootPool;
 import net.minecraft.world.level.storage.loot.entries.LootItem;
 import net.minecraft.world.level.storage.loot.functions.SetNbtFunction;
@@ -48,6 +51,11 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.*;
 import com.mojang.math.Transformation;
 import org.joml.Quaternionf;
+
+import net.minecraft.world.level.ChunkPos;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -70,16 +78,19 @@ public class ImpactReactionHandler {
     private static final long SHORT_COOLDOWN_MS = 3500;
     private static final Map<UUID, Integer> FALL_TICKS = new ConcurrentHashMap<>();
     private static final Map<UUID, Double> MAX_FALL_SPEED = new ConcurrentHashMap<>();
-    private static int activeCraterCount = 0;
-    private static final List<Display.BlockDisplay> SPAWN_BATCH = new java.util.ArrayList<>();
-    private static final Map<UUID, List<Integer>> PLAYER_CRATERS_IDS = new ConcurrentHashMap<>();
-    private static final Map<Long, CraterBlockData> ACTIVE_CRATERS_MAP = new ConcurrentHashMap<>();
-    private static final List<ImpactDamageZone> ACTIVE_DAMAGE_ZONES = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    public static final Map<UUID, Set<Integer>> PLAYER_CRATERS_IDS = new ConcurrentHashMap<>();
+    private static final List<ImpactDamageZone> ACTIVE_DAMAGE_ZONES = new ArrayList<>();
     private record ImpactDamageZone(Vec3 center, double radius, UUID owner, long expireTime) {}
     private static final java.util.concurrent.ConcurrentHashMap<Long, java.util.concurrent.atomic.AtomicInteger> CHUNK_CRATER_COUNT =
             new java.util.concurrent.ConcurrentHashMap<>();
     private static final int MAX_CRATERS_PER_CHUNK = 150;
     private static final java.util.Random NOISE_RANDOM = new java.util.Random();
+    private static final Map<ChunkPos, Set<Integer>> CHUNK_DISPLAYS = new ConcurrentHashMap<>();
+    private static final java.util.concurrent.atomic.AtomicInteger activeCraterCount = new java.util.concurrent.atomic.AtomicInteger(0);
+    public static final it.unimi.dsi.fastutil.longs.Long2ObjectMap<CraterBlockData> ACTIVE_CRATERS_MAP = new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
+    private static int ghostCleanupTimer = 0;
+
 
     private static final java.util.concurrent.ExecutorService CRATER_EXECUTOR =
             java.util.concurrent.Executors.newFixedThreadPool(
@@ -92,19 +103,19 @@ public class ImpactReactionHandler {
             );
 
 
-    // OPTİMİZASYON: Aktif krater blokları (Thread-safe)
-    private static final Map<BlockPos, CraterBlockData> ACTIVE_CRATERS = new ConcurrentHashMap<>();
-
-    private static class CraterBlockData {
+    public static class CraterBlockData {
         final long startTime;
-        final int destroyId;
+
+        public final int destroyId;
+
         final UUID ownerUUID;
 
-        CraterBlockData(int destroyId, UUID ownerUUID) {
+        public CraterBlockData(int destroyId, UUID ownerUUID) {
             this.destroyId = destroyId;
             this.startTime = System.currentTimeMillis();
             this.ownerUUID = ownerUUID;
         }
+
         boolean isExpired() { return System.currentTimeMillis() - startTime >= 20000; }
         int getElapsedSeconds() { return (int)((System.currentTimeMillis() - startTime) / 1000); }
     }
@@ -115,6 +126,8 @@ public class ImpactReactionHandler {
             tick(e.player);
         }
     }
+
+
 
     @SubscribeEvent
     public static void onRightClick(PlayerInteractEvent.RightClickItem event) {
@@ -340,7 +353,6 @@ public class ImpactReactionHandler {
     public static void triggerImpact(Player player, double speed, Vec3 normal, Vec3 exactHitPos) {
         if (!(player.level() instanceof ServerLevel serverLevel)) return;
 
-        // TEMEL HESAPLAMALAR VE GÖRSEL HAZIRLIK
         MeteorVisualEffects.ImpactTemplate impact = MeteorVisualEffects.calculateImpact(speed, normal);
         player.fallDistance = 0;
 
@@ -536,7 +548,6 @@ public class ImpactReactionHandler {
 
                 float trueDamage = target.getMaxHealth() * 0.08f * (float)damageRatio;
 
-                // --- KAPLUMBAĞA GÜVENLİ EVİM ENTEGRASYONU ---
                 ItemStack helmet = target.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.HEAD);
                 if (helmet.is(net.minecraft.world.item.Items.TURTLE_HELMET)) {
                     long lastTurtle = target.getPersistentData().getLong("ZipirTurtleCD");
@@ -555,7 +566,6 @@ public class ImpactReactionHandler {
                         }
                     }
                 }
-                // --- ENTEGRASYON SONU ---
 
                 target.getArmorSlots().forEach(stack -> {
                     if (!stack.isEmpty() && stack.isDamageableItem()) {
@@ -606,7 +616,7 @@ public class ImpactReactionHandler {
         Vec3 tangent = normal.cross(helper).normalize();
         Vec3 bitangent = normal.cross(tangent).normalize();
 
-        activeCraterCount++;
+        activeCraterCount.incrementAndGet();
 
         for (int i = 0; i < 3; i++) {
             final double ringRadius = radius * (0.6 + (i * 0.4));
@@ -655,7 +665,7 @@ public class ImpactReactionHandler {
                             processCraterLogic(player, serverLevel, pos, pos.distSqr(center), radius, impactPoint, normal, center);
                         });
                     }
-                    SPAWN_BATCH.clear();
+
                 } catch (Exception e) {
                     e.printStackTrace();
                 }
@@ -666,7 +676,7 @@ public class ImpactReactionHandler {
         for (BlockPos pos : validPositions) {
             processCraterLogic(player, serverLevel, pos, pos.distSqr(center), radius, impactPoint, normal, center);
         }
-        SPAWN_BATCH.clear();
+
     }
 
     private static void processCraterLogic(Player player, net.minecraft.server.level.ServerLevel serverLevel, net.minecraft.core.BlockPos pos, double distSq, double radius, net.minecraft.world.phys.Vec3 impactPoint, net.minecraft.world.phys.Vec3 normal, net.minecraft.core.BlockPos center) {
@@ -687,7 +697,7 @@ public class ImpactReactionHandler {
         int id = pos.hashCode() ^ player.getId();
 
         serverLevel.destroyBlockProgress(id, pos, (int) (9 * (1.0 - dist / radius)));
-        ACTIVE_CRATERS.put(pos, new CraterBlockData(id, player.getUUID()));
+        ACTIVE_CRATERS_MAP.put(pos.asLong(), new CraterBlockData(id, player.getUUID()));
 
         double innerBound = radius * 0.75;
         double outerBound = radius + 1.3;
@@ -770,6 +780,9 @@ public class ImpactReactionHandler {
 
                     mainTag.put("block_state", net.minecraft.nbt.NbtUtils.writeBlockState(state));
                     mainTag.putFloat("view_range", 0.8f);
+
+                    mainTag.putByte("Persistent", (byte) 0);
+
                     mainTag.putBoolean("NoSave", true);
 
                     display.load(mainTag);
@@ -782,11 +795,17 @@ public class ImpactReactionHandler {
                             pos.getZ() + (normal.z * 0.04)
                     );
 
+                    long craterUID = pos.asLong(); // Eşsiz etiket
                     display.addTag("zipir_krater_fx");
+                    display.addTag("zipir_id_" + pos.asLong());
+                    display.getPersistentData().putLong("crater_origin_pos", pos.asLong());
+
+                    display.getPersistentData().putBoolean("zipir_no_save", true);
 
                     if (serverLevel.addFreshEntity(display)) {
+
                         int displayId = display.getId();
-                        PLAYER_CRATERS_IDS.computeIfAbsent(player.getUUID(), k -> new java.util.ArrayList<>()).add(displayId);
+                        PLAYER_CRATERS_IDS.computeIfAbsent(player.getUUID(), k -> new java.util.HashSet<>()).add(displayId);
                         ACTIVE_CRATERS_MAP.put(pos.asLong(), new CraterBlockData(id, player.getUUID()));
                         chunkCount.incrementAndGet();
 
@@ -794,9 +813,8 @@ public class ImpactReactionHandler {
                             serverLevel.getServer().execute(() -> {
                                 net.minecraft.world.entity.Entity e = serverLevel.getEntity(displayId);
                                 if (e != null && !e.isRemoved()) {
+                                    ImpactReactionHandler.onDisplayRemoved(e.getId(), new ChunkPos(e.blockPosition()));
                                     e.discard();
-                                    if (activeCraterCount > 0) activeCraterCount--;
-                                    chunkCount.decrementAndGet();
                                 }
                             });
                         }, 20, java.util.concurrent.TimeUnit.SECONDS);
@@ -843,7 +861,7 @@ public class ImpactReactionHandler {
                 }
             }
 
-            // Her grubu kendi combinedBox'ı ile tara
+            // Her grubu kendi combinedBox ı ile tara
             for (List<ImpactDamageZone> group : groups) {
                 AABB combinedBox = null;
                 for (ImpactDamageZone z : group) {
@@ -869,25 +887,40 @@ public class ImpactReactionHandler {
 
         if (!ACTIVE_CRATERS_MAP.isEmpty()) {
             java.util.Iterator<java.util.Map.Entry<Long, CraterBlockData>> it = ACTIVE_CRATERS_MAP.entrySet().iterator();
+
             while (it.hasNext()) {
                 java.util.Map.Entry<Long, CraterBlockData> entry = it.next();
                 net.minecraft.core.BlockPos pos = net.minecraft.core.BlockPos.of(entry.getKey());
                 CraterBlockData data = entry.getValue();
 
-                // Süresi dolan bloğu temizle
-                if (data.isExpired()) {
-                    if (sl.isLoaded(pos)) {
-                        sl.destroyBlockProgress(data.destroyId, pos, -1);
-                        sl.getEntities((net.minecraft.world.entity.Entity) null, new net.minecraft.world.phys.AABB(pos),
-                                e -> e.getTags().contains("zipir_krater_fx")).forEach(net.minecraft.world.entity.Entity::discard);
-                    }
-                    if (activeCraterCount > 0) activeCraterCount--;
+                //Chunk kontrolü
+                if (!sl.isLoaded(pos)) {
+                    ImpactReactionHandler.forceClearChunkData(new ChunkPos(pos));
                     it.remove();
                     continue;
                 }
 
-                if (!sl.isLoaded(pos)) continue;
+                Player owner = sl.getPlayerByUUID(data.ownerUUID);
+                boolean isFarAway = (owner != null && owner.position().distanceToSqr(pos.getX(), pos.getY(), pos.getZ()) > 25600);
 
+                if (data.isExpired() || isFarAway) {
+                    sl.destroyBlockProgress(data.destroyId, pos, -1);
+
+                    sl.getEntities(EntityTypeTest.forClass(Entity.class),
+                                    new AABB(pos).inflate(1.5),
+                                    e -> e.getTags().contains("zipir_krater_fx"))
+                            .forEach(e -> {
+                                if (!e.isRemoved()) {
+                                    ImpactReactionHandler.onDisplayRemoved(e.getId(), new ChunkPos(e.blockPosition()));
+                                    e.discard();
+                                }
+                            });
+
+                    it.remove();
+                    continue;
+                }
+
+                //Efektler
                 int elapsed = data.getElapsedSeconds();
 
                 sl.sendParticles(net.minecraft.core.particles.ParticleTypes.SMOKE,
@@ -904,6 +937,12 @@ public class ImpactReactionHandler {
                 }
             }
         }
+
+        if (++ghostCleanupTimer >= 200) {
+            ghostCleanupTimer = 0;
+            runGhostCleanup(sl);
+        }
+
     }
 
     public static long getRemainingCooldown(UUID playerUUID) {
@@ -916,26 +955,36 @@ public class ImpactReactionHandler {
         java.util.UUID uuid = event.getEntity().getUUID();
         net.minecraft.world.entity.player.Player player = event.getEntity();
 
-        java.util.List<Integer> craterIds = PLAYER_CRATERS_IDS.remove(uuid);
+        java.util.Set<Integer> craterIds = PLAYER_CRATERS_IDS.remove(uuid);
 
-        if (craterIds != null && player.level() instanceof net.minecraft.server.level.ServerLevel sl) {
+        if (craterIds != null && player.level() instanceof ServerLevel sl) {
             for (int entityId : craterIds) {
-                net.minecraft.world.entity.Entity crater = sl.getEntity(entityId);
+                Entity crater = sl.getEntity(entityId);
                 if (crater != null) {
+                    ImpactReactionHandler.onDisplayRemoved(crater.getId(), new ChunkPos(crater.blockPosition()));
                     crater.discard();
-                    // Global krater sayacını güvenli şekilde düşür
-                    if (activeCraterCount > 0) activeCraterCount--;
                 }
             }
         }
 
-        if (player.level() instanceof net.minecraft.server.level.ServerLevel sl) {
-
+        if (player.level() instanceof ServerLevel sl) {
             ACTIVE_CRATERS_MAP.entrySet().removeIf(entry -> {
                 CraterBlockData data = entry.getValue();
                 if (data.ownerUUID.equals(uuid)) {
+                    BlockPos pos = BlockPos.of(entry.getKey());
 
-                    sl.destroyBlockProgress(data.destroyId, net.minecraft.core.BlockPos.of(entry.getKey()), -1);
+                    sl.destroyBlockProgress(data.destroyId, pos, -1);
+
+                    sl.getEntities(EntityTypeTest.forClass(Entity.class),
+                                    new AABB(pos).inflate(1.5),
+                                    e -> e.getTags().contains("zipir_krater_fx"))
+                            .forEach(e -> {
+                                if (!e.isRemoved()) {
+                                    ImpactReactionHandler.onDisplayRemoved(e.getId(), new ChunkPos(e.blockPosition()));
+                                    e.discard();
+                                }
+                            });
+
                     return true;
                 }
                 return false;
@@ -944,6 +993,7 @@ public class ImpactReactionHandler {
             ACTIVE_DAMAGE_ZONES.removeIf(zone -> zone.owner().equals(uuid));
         }
 
+
         CHARGE.remove(uuid);
         COOLDOWN.remove(uuid);
         SONIC_PLAYED.remove(uuid);
@@ -951,17 +1001,142 @@ public class ImpactReactionHandler {
         FALL_TICKS.remove(uuid);
         MAX_FALL_SPEED.remove(uuid);
 
-        // Emniyet kilidi: Negatif sayıya düşmeyi önle
-        if (activeCraterCount < 0) activeCraterCount = 0;
+        activeCraterCount.updateAndGet(v -> Math.max(0, v));
     }
 
     @SubscribeEvent
     public static void onServerStopping(net.minecraftforge.event.server.ServerStoppingEvent event) {
-        activeCraterCount = 0;
-        ACTIVE_CRATERS.clear();
+        activeCraterCount.set(0);
         ACTIVE_CRATERS_MAP.clear();
         ACTIVE_DAMAGE_ZONES.clear();
         PLAYER_CRATERS_IDS.clear();
+    }
+
+    public static void onDisplayRemoved(int displayId, net.minecraft.world.level.ChunkPos chunkPos) {
+
+        java.util.Set<Integer> displays = CHUNK_DISPLAYS.get(chunkPos);
+        if (displays != null) {
+            synchronized (displays) {
+                if (!displays.contains(displayId)) return;
+                displays.remove(displayId);
+                if (displays.isEmpty()) {
+                    CHUNK_DISPLAYS.remove(chunkPos);
+                }
+            }
+        }
+
+        PLAYER_CRATERS_IDS.values().forEach(list -> {
+            synchronized (list) {
+                list.remove(Integer.valueOf(displayId));
+            }
+        });
+
+        activeCraterCount.updateAndGet(v -> Math.max(0, v - 1));
+
+        long chunkKey = chunkPos.toLong();
+        java.util.concurrent.atomic.AtomicInteger atomicCount = CHUNK_CRATER_COUNT.get(chunkKey);
+        if (atomicCount != null) {
+            if (atomicCount.get() > 1) {
+                atomicCount.decrementAndGet();
+            } else {
+                CHUNK_CRATER_COUNT.remove(chunkKey);
+            }
+        }
+    }
+
+    public static void forceClearChunkData(net.minecraft.world.level.ChunkPos pos) {
+        CHUNK_CRATER_COUNT.remove(pos.toLong());
+        CHUNK_DISPLAYS.remove(pos);
+
+        ACTIVE_CRATERS_MAP.keySet().removeIf(blockPosLong -> {
+            int chunkX = (int) (blockPosLong >> 38);
+            int chunkZ = (int) (blockPosLong << 26 >> 38);
+            return chunkX == pos.x && chunkZ == pos.z;
+        });
+    }
+
+    public static void clearChunkCache(net.minecraft.world.level.ChunkPos pos) {
+        CHUNK_DISPLAYS.remove(pos);
+    }
+
+
+    public static void onChunkUnloadCleanup(ServerLevel sl, ChunkPos cp) {
+
+        List<Display.BlockDisplay> toRemove = new ArrayList<>();
+
+        List<Display.BlockDisplay> displays =
+                sl.getEntitiesOfClass(Display.BlockDisplay.class,
+                        new AABB(
+                                cp.getMinBlockX(), sl.getMinBuildHeight(), cp.getMinBlockZ(),
+                                cp.getMaxBlockX() + 1, sl.getMaxBuildHeight(), cp.getMaxBlockZ() + 1
+                        ),
+                        d -> d.getTags().contains("zipir_krater_fx")
+                );
+
+        for (Display.BlockDisplay display : displays) {
+            toRemove.add(display);
+        }
+
+        for (Display.BlockDisplay display : toRemove) {
+            ClientboundRemoveEntitiesPacket pkt =
+                    new ClientboundRemoveEntitiesPacket(display.getId());
+            sl.players().forEach(p -> {
+                if (p.chunkPosition().getChessboardDistance(cp) <= 10)
+                    p.connection.send(pkt);
+            });
+            onDisplayRemoved(display.getId(), cp);
+            display.discard();
+        }
+
+        ACTIVE_CRATERS_MAP.keySet().removeIf(posLong -> {
+            int cx = (int)(posLong >> 38);
+            int cz = (int)(posLong << 26 >> 38);
+            return cx == cp.x && cz == cp.z;
+        });
+
+        ACTIVE_DAMAGE_ZONES.removeIf(zone -> {
+            Vec3 c = zone.center();
+            return ((int) Math.floor(c.x) >> 4) == cp.x
+                    && ((int) Math.floor(c.z) >> 4) == cp.z;
+        });
+
+        forceClearChunkData(cp);
+        clearChunkCache(cp);
+    }
+
+
+    public static void runGhostCleanup(ServerLevel sl) {
+        List<Display.BlockDisplay> ghosts = new ArrayList<>();
+
+        List<Display.BlockDisplay> displays =
+                sl.getEntitiesOfClass(Display.BlockDisplay.class,
+                        new AABB(
+                                Integer.MIN_VALUE, sl.getMinBuildHeight(), Integer.MIN_VALUE,
+                                Integer.MAX_VALUE, sl.getMaxBuildHeight(), Integer.MAX_VALUE
+                        ),
+                        d -> d.getTags().contains("zipir_krater_fx")
+                );
+
+        for (Display.BlockDisplay display : displays) {
+            long originPos = display.getPersistentData().getLong("crater_origin_pos");
+
+            if (originPos == 0 || !ACTIVE_CRATERS_MAP.containsKey(originPos)) {
+                ghosts.add(display);
+            }
+        }
+
+        for (Display.BlockDisplay display : ghosts) {
+            ChunkPos cp = new ChunkPos(display.blockPosition());
+            ClientboundRemoveEntitiesPacket pkt =
+                    new ClientboundRemoveEntitiesPacket(display.getId());
+            sl.players().forEach(p -> p.connection.send(pkt));
+            onDisplayRemoved(display.getId(), cp);
+            display.discard();
+        }
+    }
+
+    public static void globalCleanupTick(net.minecraft.world.level.Level level) {
+
     }
 
     private static void applyVehicleImpact(Player player, Vec3 impactPos, double impactSpeed) {
@@ -1006,5 +1181,4 @@ public class ImpactReactionHandler {
             shield.applySuperSkillPush(dirNorm, nerfedPower * distFactor);
         });
     }
-
 }
