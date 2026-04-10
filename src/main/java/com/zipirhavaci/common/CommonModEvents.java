@@ -9,19 +9,29 @@ import com.zipirhavaci.core.physics.ShieldRamMechanicHandler;
 import com.zipirhavaci.core.physics.SoulBondHandler;
 import com.zipirhavaci.energy.EnergyNetworkManager;
 import com.zipirhavaci.network.PacketHandler;
+import com.zipirhavaci.network.SyncCraterPacket;
 import com.zipirhavaci.network.SyncStaticProgressionPacket;
 import com.zipirhavaci.physics.MovementHandler;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.Display;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.level.ChunkEvent;
+import net.minecraftforge.event.level.ChunkWatchEvent;
+import net.minecraftforge.event.level.LevelEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.event.entity.living.LivingHurtEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
@@ -32,8 +42,12 @@ import net.minecraft.world.entity.projectile.AbstractArrow;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
+import static com.zipirhavaci.core.physics.ImpactReactionHandler.PLAYER_CRATERS_IDS;
 import static com.zipirhavaci.core.physics.SoulBondHandler.ACTIVE_PULLS;
 
 
@@ -79,9 +93,6 @@ public class CommonModEvents {
         if (event.player instanceof ServerPlayer serverPlayer) {
             SoulBondHandler.onServerTick(serverPlayer);
 
-            // Sadece oyuncu hayattaysa, Spectator modundaysa,
-            // AKTİF bir çekilme işlemi bitmişse (!ACTIVE_PULLS)
-            // VE bu oyuncu bizim tarafımızdan Spectator'a alınmışsa (hasOriginalGameMode) çalışır.
             if (serverPlayer.isAlive() && serverPlayer.isSpectator() &&
                     !SoulBondHandler.ACTIVE_PULLS.containsKey(serverPlayer.getUUID()) &&
                     SoulBondHandler.hasOriginalGameMode(serverPlayer.getUUID())) {
@@ -318,56 +329,58 @@ public class CommonModEvents {
 
     @SubscribeEvent
     public static void onChunkLoad(ChunkEvent.Load event) {
-        if (event.getLevel() instanceof net.minecraft.server.level.ServerLevel sl
-                && event.getChunk() instanceof net.minecraft.world.level.chunk.LevelChunk chunk) {
-            EnergyNetworkManager.get(sl).onChunkLoaded(sl, chunk);
+        if (!(event.getLevel() instanceof ServerLevel sl)) return;
+        if (!(event.getChunk() instanceof LevelChunk chunk)) return;
 
-            {
-                net.minecraft.world.level.ChunkPos cp = chunk.getPos();
+        EnergyNetworkManager.get(sl).onChunkLoaded(sl, chunk);
+        markScanned(sl.dimension(), chunk.getPos().x, chunk.getPos().z);
 
-                if (!isAlreadyScanned(sl.dimension(), cp.x, cp.z)) {
-                    int worldMinY = sl.getMinBuildHeight();
-                    int worldMaxY = sl.getMaxBuildHeight();
-                    int scanMinY = worldMaxY;
-                    int scanMaxY = worldMinY;
+        ChunkPos cp = chunk.getPos();
 
-                    for (int lx = 0; lx < 16; lx++) {
-                        for (int lz = 0; lz < 16; lz++) {
-                            int surfaceY = chunk.getHeight(
-                                    net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE,
-                                    lx, lz);
-                            if (surfaceY < scanMinY) scanMinY = surfaceY;
-                            if (surfaceY > scanMaxY) scanMaxY = surfaceY;
-                        }
-                    }
-
-                    if (scanMinY <= scanMaxY) {
-                        int finalMinY = Math.max(worldMinY, scanMinY - 2);
-                        int finalMaxY = Math.min(worldMaxY, scanMaxY + 1);
-
-                        net.minecraft.world.phys.AABB scanBounds = new net.minecraft.world.phys.AABB(
-                                cp.getMinBlockX(), finalMinY, cp.getMinBlockZ(),
-                                cp.getMaxBlockX() + 1, finalMaxY + 1, cp.getMaxBlockZ() + 1
-                        );
-
-                        sl.getEntities((net.minecraft.world.entity.Entity) null, scanBounds,
-                                        e -> e.getTags().contains("zipir_krater_fx"))
-                                .forEach(net.minecraft.world.entity.Entity::discard);
-                    }
-
-                    markScanned(sl.dimension(), cp.x, cp.z);
-                }
-            }
-        }
     }
 
     @SubscribeEvent
     public static void onChunkUnload(ChunkEvent.Unload event) {
-        if (event.getLevel() instanceof net.minecraft.server.level.ServerLevel sl
-                && event.getChunk() instanceof net.minecraft.world.level.chunk.LevelChunk chunk) {
-            EnergyNetworkManager.get(sl).onChunkUnloaded(sl, chunk);
+        if (!(event.getLevel() instanceof ServerLevel sl)) return;
+        if (!(event.getChunk() instanceof LevelChunk chunk)) return;
+
+        ChunkPos cp = chunk.getPos();
+        EnergyNetworkManager.get(sl).onChunkUnloaded(sl, chunk);
+        ImpactReactionHandler.onChunkUnloadCleanup(sl, cp);
+    }
+
+
+    @SubscribeEvent
+    public static void onLevelTick(TickEvent.LevelTickEvent event) {
+
+        if (event.phase == TickEvent.Phase.END && !event.level.isClientSide && event.level.getGameTime() % 20 == 0) {
+            ImpactReactionHandler.globalCleanupTick(event.level);
         }
     }
+
+    @SubscribeEvent
+    public static void onLevelSave(net.minecraftforge.event.level.LevelEvent.Save event) {
+        if (!(event.getLevel() instanceof net.minecraft.server.level.ServerLevel sl)) return;
+
+        PLAYER_CRATERS_IDS.values().forEach(activeIds -> {
+
+            if (activeIds != null && !activeIds.isEmpty()) {
+
+                new java.util.HashSet<>(activeIds).forEach(id -> {
+
+                    net.minecraft.world.entity.Entity e = sl.getEntity(id);
+
+                    if (e instanceof net.minecraft.world.entity.Display.BlockDisplay display) {
+                        net.minecraft.world.level.ChunkPos cp = new net.minecraft.world.level.ChunkPos(display.blockPosition());
+
+                        ImpactReactionHandler.onDisplayRemoved(id, cp);
+                        display.discard();
+                    }
+                });
+            }
+        });
+    }
+
 
     @SubscribeEvent
     public static void onPlayerRespawn(PlayerEvent.PlayerRespawnEvent event) {
@@ -395,6 +408,50 @@ public class CommonModEvents {
         }
     }
 
+
+    @SubscribeEvent
+    public static void onChunkWatch(ChunkWatchEvent.Watch event) {
+        ServerLevel serverLevel = event.getLevel();
+        ChunkPos cp = event.getPos();
+        ServerPlayer player = (ServerPlayer) event.getPlayer();
+
+        for (int delay = 5; delay <= 20; delay += 5) {
+            int finalDelay = delay;
+            serverLevel.getServer().execute(() -> {
+
+            });
+        }
+
+        serverLevel.getServer().execute(() ->
+                serverLevel.getServer().execute(() ->
+                        serverLevel.getServer().execute(() -> {
+                            List<Long> validIds = ImpactReactionHandler.ACTIVE_CRATERS_MAP.keySet().stream()
+                                    .filter(posLong -> {
+                                        BlockPos p = BlockPos.of(posLong);
+                                        return (p.getX() >> 4) == cp.x && (p.getZ() >> 4) == cp.z;
+                                    }).collect(java.util.stream.Collectors.toList());
+
+                            PacketHandler.sendToPlayer(player, new SyncCraterPacket(cp, validIds));
+                        })
+                )
+        );
+    }
+
+    @SubscribeEvent
+    public static void onEntityJoinLevel(net.minecraftforge.event.entity.EntityJoinLevelEvent event) {
+        if (!event.getLevel().isClientSide && event.getEntity() instanceof net.minecraft.world.entity.Display.BlockDisplay display) {
+
+            if (display.getTags().contains("zipir_krater_fx")) {
+                long originPos = display.getPersistentData().getLong("crater_origin_pos");
+
+                if (originPos == 0 || !com.zipirhavaci.core.physics.ImpactReactionHandler.ACTIVE_CRATERS_MAP.containsKey(originPos)) {
+
+                    event.setCanceled(true);
+                    display.discard();
+                }
+            }
+        }
+    }
 
     @SubscribeEvent
     public static void onLivingHurt(LivingHurtEvent event) {
@@ -446,10 +503,6 @@ public class CommonModEvents {
         });
     }
 
-    // ══════════════════════════════════════════════════════════════════════════
-    // MOD BUS EVENT'LERİ — Attribute kaydı
-    // (FORGE bus olan CommonModEvents e eklenemez, ayrı iç sınıf olarak tanımlanır)
-    // ══════════════════════════════════════════════════════════════════════════
     @Mod.EventBusSubscriber(modid = ZipirHavaci.MOD_ID, bus = Mod.EventBusSubscriber.Bus.MOD)
     public static class ModBusEvents {
 
@@ -459,7 +512,7 @@ public class CommonModEvents {
                     com.zipirhavaci.core.EntityRegistry.SILENT_CAPTIVE.get(),
                     com.zipirhavaci.entity.SilentCaptiveEntity.createAttributes().build()
             );
-            // ── YENİ ──────────────────────────────────────────────────────────
+
             event.put(
                     com.zipirhavaci.core.EntityRegistry.LIBRATED_SOUL.get(),
                     com.zipirhavaci.entity.LibratedSoulEntity.createAttributes().build()
